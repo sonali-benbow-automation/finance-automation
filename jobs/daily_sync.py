@@ -1,14 +1,13 @@
-from db.db import db_tx
-from ingest.ingest_plaid import ingest_plaid
-from notify.send_sms import send_daily_digest
 from config import NOTIFICATIONS_ENABLED
+from ingest.ingest_plaid import main as run_ingest
+from notify.send_sms import send_summary_text
+
 
 def main():
-    with db_tx() as conn:
-        ingest_plaid(conn)
+    run_ingest()
+    if NOTIFICATIONS_ENABLED:
+        send_summary_text()
 
-        if NOTIFICATIONS_ENABLED:
-            send_daily_digest(conn)
 
 if __name__ == "__main__":
     main()
