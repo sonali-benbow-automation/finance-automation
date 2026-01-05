@@ -1,0 +1,4 @@
+plaid-python
+gspread
+protobuf
+python-dotenv
