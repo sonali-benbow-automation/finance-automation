@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from config import TIMEZONE, NOTIFICATIONS_ENABLED
-from notify.daily_summary import build_daily_summary
+from notify.daily_summary import build_daily_summary_html
 
 load_dotenv()
 
@@ -20,7 +20,7 @@ def require_env(name):
     return value
 
 
-def send_daily_digest_email(subject=None, body=None):
+def send_daily_digest_email(subject=None, include_transactions=True):
     if not NOTIFICATIONS_ENABLED:
         return {"skipped": True}
     smtp_user = require_env("SMTP_EMAIL")
@@ -29,16 +29,15 @@ def send_daily_digest_email(subject=None, body=None):
     smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     from_addr = os.getenv("EMAIL_FROM", smtp_user)
     to_addr = require_env("EMAIL_TO")
-    if body is None:
-        body = build_daily_summary()
     if subject is None:
         date_label = datetime.now(TZ).strftime("%Y-%m-%d")
         subject = f"Daily Finance Summary: {date_label}"
+    html_body = build_daily_summary_html(include_transactions=include_transactions)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"Finance Digest <{from_addr}>"
     msg["To"] = to_addr
-    msg.set_content(body)
+    msg.set_content(html_body, subtype="html")
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.ehlo()

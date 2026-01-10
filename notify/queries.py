@@ -93,3 +93,18 @@ where a.include_in_app = true
   and t.date >= date_trunc('month', (now() at time zone 'America/New_York'))::date
   and t.date <= (now() at time zone 'America/New_York')::date;
 """
+
+YTD_TOTALS = """
+select
+  coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as ytd_spent,
+  coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as ytd_received
+from transactions t
+join accounts a
+  on a.id = t.account_pk
+where a.include_in_app = true
+  and a.active = true
+  and t.removed = false
+  and coalesce(t.pending, false) = false
+  and t.date >= date_trunc('year', (now() at time zone 'America/New_York'))::date
+  and t.date <= (now() at time zone 'America/New_York')::date;
+"""
