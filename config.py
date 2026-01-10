@@ -6,6 +6,8 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+PLAID_ENV = os.getenv("PLAID_ENV")
+
 TABLES = {
     "plaid_items": os.getenv("PLAID_ITEMS_TABLE", "plaid_items"),
     "accounts": os.getenv("ACCOUNTS_TABLE", "accounts"),
@@ -80,8 +82,3 @@ INGEST_BALANCES_DEFAULT = True
 NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "true").lower() == "true"
 DAILY_DIGEST_HOUR = int(os.getenv("DAILY_DIGEST_HOUR", "9"))
 TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
-
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-MY_NUMBER = os.getenv("MY_NUMBER")

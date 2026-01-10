@@ -70,6 +70,7 @@ def main():
                 institution_id,
                 plan.get("initial_products", ["transactions"]),
             )
+
             upsert_item(
                 conn,
                 label=label,
@@ -81,6 +82,7 @@ def main():
                 balances_enabled=plan.get("balances_enabled", True),
             )
             created += 1
+
     print(f"Sandbox setup complete. created={created} skipped={skipped}")
 
 

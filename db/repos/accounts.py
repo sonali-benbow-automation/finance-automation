@@ -2,12 +2,13 @@ from config import TABLES
 
 ACCOUNTS_TABLE = TABLES["accounts"]
 
-def _to_text(v):
+
+def to_text(v):
     return None if v is None else str(v)
 
 def upsert_account(
     conn,
-    label,
+    plaid_item_pk,
     account_id,
     name=None,
     official_name=None,
@@ -15,52 +16,60 @@ def upsert_account(
     subtype=None,
     mask=None,
     iso_currency_code=None,
-    include_in_app=True,
-    active=True,
+    include_in_app=None,
+    active=None,
+    raw=None,
 ):
     sql = f"""
     insert into {ACCOUNTS_TABLE}
-      (label, account_id, name, official_name, type, subtype, mask, iso_currency_code,
-       include_in_app, active, updated_at)
+      (plaid_item_pk, account_id, name, official_name, type, subtype, mask, iso_currency_code,
+       include_in_app, active, raw, updated_at)
     values
       (%s, %s, %s, %s, %s, %s, %s, %s,
-       %s, %s, now())
-    on conflict (label, account_id) do update set
+       coalesce(%s, true), coalesce(%s, true), %s, now())
+    on conflict (plaid_item_pk, account_id) do update set
       name = excluded.name,
       official_name = excluded.official_name,
       type = excluded.type,
       subtype = excluded.subtype,
       mask = excluded.mask,
       iso_currency_code = excluded.iso_currency_code,
-      include_in_app = excluded.include_in_app,
-      active = excluded.active,
-      updated_at = now();
+      raw = excluded.raw,
+      include_in_app = coalesce(%s, {ACCOUNTS_TABLE}.include_in_app),
+      active = coalesce(%s, {ACCOUNTS_TABLE}.active),
+      updated_at = now()
+    returning id;
     """
     with conn.cursor() as cur:
         cur.execute(
             sql,
             (
-                label,
+                plaid_item_pk,
                 account_id,
                 name,
                 official_name,
-                _to_text(account_type),
-                _to_text(subtype),
+                to_text(account_type),
+                to_text(subtype),
                 mask,
                 iso_currency_code,
                 include_in_app,
                 active,
+                raw,
+                include_in_app,
+                active,
             ),
         )
+        return cur.fetchone()[0]
 
-def get_included_account_ids(conn, label):
+
+def get_included_accounts(conn, plaid_item_pk):
     sql = f"""
-    select account_id
+    select id, account_id
     from {ACCOUNTS_TABLE}
-    where label = %s
+    where plaid_item_pk = %s
       and include_in_app = true
       and active = true;
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (label,))
-        return {r[0] for r in cur.fetchall()}
+        cur.execute(sql, (plaid_item_pk,))
+        return {account_id: account_pk for (account_pk, account_id) in cur.fetchall()}

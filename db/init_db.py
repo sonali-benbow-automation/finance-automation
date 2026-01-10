@@ -13,6 +13,7 @@ def main():
         "ACCOUNTS_TABLE": TABLES["accounts"],
         "CURSORS_TABLE": TABLES["cursors"],
         "TRANSACTIONS_TABLE": TABLES["transactions"],
+        "NOTIFICATIONS_TABLE": TABLES["notifications"],
     })
     with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:

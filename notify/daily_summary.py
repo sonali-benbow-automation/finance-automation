@@ -15,12 +15,6 @@ from notify.queries import (
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
 
 
-class Totals:
-    def __init__(self, spent, received):
-        self.spent = spent
-        self.received = received
-
-
 def to_decimal(value):
     if value is None:
         return Decimal("0")
@@ -53,16 +47,16 @@ def fetch_all(conn, sql, params=None):
 
 
 def format_tx_line(tx):
-    name = (tx.get("merchant_name") or tx.get("name") or "").strip()
+    name = (tx.get("merchant_name") or tx.get("name") or "").strip() or "(unknown)"
     amount = to_decimal(tx.get("amount"))
     if amount < 0:
         amount_str = f"+{format_money(-amount)}"
     else:
         amount_str = format_money(amount)
-    return f"• {name} — {amount_str}"
+    return f"{name}: {amount_str}"
 
 
-def build_daily_summary_text(max_tx_lines=10, include_transactions=False):
+def build_daily_summary(include_transactions=True):
     now_local = datetime.now(TZ)
     date_label = now_local.strftime("%Y-%m-%d")
     with db_conn() as conn:
@@ -70,40 +64,31 @@ def build_daily_summary_text(max_tx_lines=10, include_transactions=False):
         wtd = fetch_one(conn, WTD_TOTALS)
         mtd = fetch_one(conn, MTD_TOTALS)
         net = fetch_one(conn, NET_WORTH_LATEST)
-        transactions = []
-        if include_transactions:
-            transactions = fetch_all(conn, POSTED_TRANSACTIONS_LATEST_RUN)
-    today_totals = Totals(
-        to_decimal(today.get("today_spent")),
-        to_decimal(today.get("today_received")),
-    )
-    wtd_totals = Totals(
-        to_decimal(wtd.get("wtd_spent")),
-        to_decimal(wtd.get("wtd_received")),
-    )
-    mtd_totals = Totals(
-        to_decimal(mtd.get("mtd_spent")),
-        to_decimal(mtd.get("mtd_received")),
-    )
+        txs = fetch_all(conn, POSTED_TRANSACTIONS_LATEST_RUN) if include_transactions else []
+    today_spent = to_decimal(today.get("today_spent"))
+    today_received = to_decimal(today.get("today_received"))
+    wtd_spent = to_decimal(wtd.get("wtd_spent"))
+    wtd_received = to_decimal(wtd.get("wtd_received"))
+    mtd_spent = to_decimal(mtd.get("mtd_spent"))
+    mtd_received = to_decimal(mtd.get("mtd_received"))
     net_worth = to_decimal(net.get("net_worth"))
     lines = []
-    lines.append(f"DAILY FINANCE SUMMARY: {date_label}")
-    lines.append(
-        f"DAILY Spent: {format_money(today_totals.spent)} and "
-        f"Received: {format_money(today_totals.received)} | "
-        f"WEEKLY Spent: {format_money(wtd_totals.spent)} and "
-        f"Received: {format_money(wtd_totals.received)} | "
-        f"MONTHLY Spent: {format_money(mtd_totals.spent)} and "
-        f"Received: {format_money(mtd_totals.received)}"
-    )
-    lines.append(f"NET WORTH LATEST: {format_money(net_worth)}")
-    if include_transactions and transactions:
+    lines.append("Totals")
+    lines.append(f"Today: Spent {format_money(today_spent)} | Received {format_money(today_received)}")
+    lines.append(f"Week-to-date: Spent {format_money(wtd_spent)} | Received {format_money(wtd_received)}")
+    lines.append(f"Month-to-date: Spent {format_money(mtd_spent)} | Received {format_money(mtd_received)}")
+    lines.append("")
+    lines.append(f"Net Worth: {format_money(net_worth)}")
+    if include_transactions:
         lines.append("")
-        lines.append("RECENT POSTED TRANSACTIONS:")
-        for tx in transactions[:max_tx_lines]:
-            lines.append(format_tx_line(tx))
+        lines.append("Recent Posted Transactions")
+        if not txs:
+            lines.append("None")
+        else:
+            for tx in txs:
+                lines.append(format_tx_line(tx))
     return "\n".join(lines)
 
 
 if __name__ == "__main__":
-    print(build_daily_summary_text(include_transactions=True))
+    print(build_daily_summary(include_transactions=True))
