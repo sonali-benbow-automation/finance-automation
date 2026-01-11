@@ -1,6 +1,21 @@
+from datetime import date, datetime
+import json
+from psycopg.types.json import Jsonb
 from config import TABLES
 
 TRANSACTIONS_TABLE = TABLES["transactions"]
+
+
+def json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
+
+
+def to_jsonb(v):
+    if v is None:
+        return None
+    return Jsonb(v, dumps=lambda obj: json.dumps(obj, default=json_default, separators=(",", ":")))
 
 
 def upsert_transaction(conn, run_id, account_pk, tx, sync_status):
@@ -64,7 +79,7 @@ def upsert_transaction(conn, run_id, account_pk, tx, sync_status):
                 tx.get("pending_transaction_id"),
                 tx.get("category_id"),
                 ", ".join(tx.get("category", [])) if isinstance(tx.get("category"), list) else tx.get("category"),
-                tx.get("personal_finance_category"),
+                to_jsonb(tx.get("personal_finance_category")),
                 tx.get("payment_channel"),
                 tx.get("transaction_type"),
                 tx.get("authorized_date"),
@@ -73,7 +88,7 @@ def upsert_transaction(conn, run_id, account_pk, tx, sync_status):
                 sync_status,
                 run_id,
                 run_id,
-                tx,
+                to_jsonb(tx),
             ),
         )
 

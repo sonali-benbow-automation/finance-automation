@@ -1,3 +1,4 @@
+from psycopg.types.json import Json
 from config import TABLES
 
 ACCOUNTS_TABLE = TABLES["accounts"]
@@ -5,6 +6,13 @@ ACCOUNTS_TABLE = TABLES["accounts"]
 
 def to_text(v):
     return None if v is None else str(v)
+
+
+def to_json(v):
+    if v is None:
+        return None
+    return Json(v)
+
 
 def upsert_account(
     conn,
@@ -54,7 +62,7 @@ def upsert_account(
                 iso_currency_code,
                 include_in_app,
                 active,
-                raw,
+                to_json(raw),
                 include_in_app,
                 active,
             ),

@@ -1,6 +1,13 @@
+from psycopg.types.json import Json
 from config import TABLES
 
 BALANCE_SNAPSHOTS_TABLE = TABLES["balance_snapshots"]
+
+
+def to_json(v):
+    if v is None:
+        return None
+    return Json(v)
 
 
 def upsert_balance_snapshot(
@@ -28,7 +35,15 @@ def upsert_balance_snapshot(
           snapshot_at = excluded.snapshot_at,
           raw = excluded.raw;
         """
-        params = (run_id, account_pk, current, available, credit_limit, iso_currency_code, raw)
+        params = (
+            run_id,
+            account_pk,
+            current,
+            available,
+            credit_limit,
+            iso_currency_code,
+            to_json(raw),
+        )
     else:
         sql = f"""
         insert into {BALANCE_SNAPSHOTS_TABLE}
@@ -43,6 +58,15 @@ def upsert_balance_snapshot(
           snapshot_at = excluded.snapshot_at,
           raw = excluded.raw;
         """
-        params = (run_id, account_pk, current, available, credit_limit, iso_currency_code, snapshot_at, raw)
+        params = (
+            run_id,
+            account_pk,
+            current,
+            available,
+            credit_limit,
+            iso_currency_code,
+            snapshot_at,
+            to_json(raw),
+        )
     with conn.cursor() as cur:
         cur.execute(sql, params)

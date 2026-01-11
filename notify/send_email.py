@@ -44,7 +44,7 @@ def send_daily_digest_email(run_id, subject=None, include_transactions=True):
     if subject is None:
         date_label = datetime.now(TZ).strftime("%Y-%m-%d")
         subject = f"Daily Finance Summary: {date_label}"
-    html_body = build_daily_summary_html(include_transactions=include_transactions)
+    html_body = build_daily_summary_html(run_id=run_id, include_transactions=include_transactions)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"Finance Digest <{from_addr}>"
@@ -75,15 +75,7 @@ def send_daily_digest_email(run_id, subject=None, include_transactions=True):
                 run_id=run_id,
                 channel=channel,
                 status="failed",
-                message=f"to={to_addr if 'to_addr' in locals() else ''} subject={subject if subject else ''}",
+                message=f"to={to_addr} subject={subject}",
                 error=err,
             )
         raise RuntimeError(f"Email send failed: {err}") from e
-
-
-def main():
-    raise RuntimeError("Use daily_sync.py as the entry point for scheduled runs.")
-
-
-if __name__ == "__main__":
-    main()

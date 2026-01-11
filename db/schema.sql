@@ -116,5 +116,7 @@ create table if not exists ${NOTIFICATIONS_TABLE} (
   error text,
   created_at timestamptz not null default now(),
   constraint notifications_run_fk
-    foreign key (run_id) references ${RUNS_TABLE}(id) on delete set null
+    foreign key (run_id) references ${RUNS_TABLE}(id) on delete set null,
+  constraint notifications_unique_run_channel
+    unique (run_id, channel)
 );
