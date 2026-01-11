@@ -6,12 +6,12 @@ import html
 from config import TIMEZONE
 from db.db import db_conn
 from notify.queries import (
-    NET_WORTH_LATEST,
-    TODAY_TOTALS,
+    NET_WORTH_FOR_RUN,
+    TODAY_TOTALS_FOR_RUN,
     WTD_TOTALS,
     MTD_TOTALS,
     YTD_TOTALS,
-    POSTED_TRANSACTIONS_LATEST_RUN,
+    POSTED_TRANSACTIONS_FOR_RUN,
 )
 
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
@@ -48,28 +48,21 @@ def fetch_all(conn, sql, params=None):
         return [dict(zip(cols, r)) for r in rows]
 
 
-def format_tx_amount(amount):
-    amt = to_decimal(amount)
-    if amt < 0:
-        return f"+{format_money(-amt)}"
-    return format_money(amt)
-
-
 def format_tx_name(tx):
     name = (tx.get("merchant_name") or tx.get("name") or "").strip()
     return name or "(unknown)"
 
 
-def build_daily_summary_data(include_transactions=True):
+def build_daily_summary_data(run_id, include_transactions=True):
     now_local = datetime.now(TZ)
     date_label = now_local.strftime("%Y-%m-%d")
     with db_conn() as conn:
-        today = fetch_one(conn, TODAY_TOTALS)
+        today = fetch_one(conn, TODAY_TOTALS_FOR_RUN, (run_id,))
         wtd = fetch_one(conn, WTD_TOTALS)
         mtd = fetch_one(conn, MTD_TOTALS)
         ytd = fetch_one(conn, YTD_TOTALS)
-        net = fetch_one(conn, NET_WORTH_LATEST)
-        txs = fetch_all(conn, POSTED_TRANSACTIONS_LATEST_RUN) if include_transactions else []
+        net = fetch_one(conn, NET_WORTH_FOR_RUN, (run_id,))
+        txs = fetch_all(conn, POSTED_TRANSACTIONS_FOR_RUN, (run_id,)) if include_transactions else []
     data = {
         "date_label": date_label,
         "totals": {
@@ -88,8 +81,8 @@ def build_daily_summary_data(include_transactions=True):
     return data
 
 
-def build_daily_summary_html(include_transactions=True):
-    data = build_daily_summary_data(include_transactions=include_transactions)
+def build_daily_summary_html(run_id, include_transactions=True):
+    data = build_daily_summary_data(run_id=run_id, include_transactions=include_transactions)
     t = data["totals"]
     def esc(x):
         return html.escape("" if x is None else str(x))

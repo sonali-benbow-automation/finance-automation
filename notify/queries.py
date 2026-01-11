@@ -1,10 +1,8 @@
-NET_WORTH_LATEST = """
-with latest_balances_run as (
-  select max(id) as run_id
-  from runs
-  where run_type = 'balances'
-    and status = 'success'
-)
+from config import TIMEZONE
+
+SQL_TIMEZONE = TIMEZONE or "America/New_York"
+
+NET_WORTH_FOR_RUN = """
 select
   coalesce(sum(
     case
@@ -15,18 +13,12 @@ select
 from balance_snapshots bs
 join accounts a
   on a.id = bs.account_pk
-join latest_balances_run r
-  on bs.run_id = r.run_id
-where a.include_in_app = true
+where bs.run_id = %s
+  and a.include_in_app = true
   and a.active = true;
 """
 
-POSTED_TRANSACTIONS_LATEST_RUN = """
-with latest_run as (
-  select max(id) as run_id
-  from runs
-  where status = 'success'
-)
+POSTED_TRANSACTIONS_FOR_RUN = """
 select
   t.date,
   t.name,
@@ -41,16 +33,15 @@ join accounts a
   on a.id = t.account_pk
 join plaid_items pi
   on pi.id = a.plaid_item_pk
-join latest_run r
-  on t.last_seen_run_id = r.run_id
 where a.include_in_app = true
   and a.active = true
   and t.removed = false
   and coalesce(t.pending, false) = false
+  and t.last_seen_run_id = %s
 order by t.date desc, t.amount desc;
 """
 
-TODAY_TOTALS = """
+TODAY_TOTALS_FOR_RUN = """
 select
   coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as today_spent,
   coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as today_received
@@ -61,10 +52,10 @@ where a.include_in_app = true
   and a.active = true
   and t.removed = false
   and coalesce(t.pending, false) = false
-  and t.date = (now() at time zone 'America/New_York')::date;
+  and t.last_seen_run_id = %s;
 """
 
-WTD_TOTALS = """
+WTD_TOTALS = f"""
 select
   coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as wtd_spent,
   coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as wtd_received
@@ -75,11 +66,11 @@ where a.include_in_app = true
   and a.active = true
   and t.removed = false
   and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('week', (now() at time zone 'America/New_York'))::date
-  and t.date <= (now() at time zone 'America/New_York')::date;
+  and t.date >= date_trunc('week', (now() at time zone '{SQL_TIMEZONE}'))::date
+  and t.date <= (now() at time zone '{SQL_TIMEZONE}')::date;
 """
 
-MTD_TOTALS = """
+MTD_TOTALS = f"""
 select
   coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as mtd_spent,
   coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as mtd_received
@@ -90,11 +81,11 @@ where a.include_in_app = true
   and a.active = true
   and t.removed = false
   and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('month', (now() at time zone 'America/New_York'))::date
-  and t.date <= (now() at time zone 'America/New_York')::date;
+  and t.date >= date_trunc('month', (now() at time zone '{SQL_TIMEZONE}'))::date
+  and t.date <= (now() at time zone '{SQL_TIMEZONE}')::date;
 """
 
-YTD_TOTALS = """
+YTD_TOTALS = f"""
 select
   coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as ytd_spent,
   coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as ytd_received
@@ -105,6 +96,6 @@ where a.include_in_app = true
   and a.active = true
   and t.removed = false
   and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('year', (now() at time zone 'America/New_York'))::date
-  and t.date <= (now() at time zone 'America/New_York')::date;
+  and t.date >= date_trunc('year', (now() at time zone '{SQL_TIMEZONE}'))::date
+  and t.date <= (now() at time zone '{SQL_TIMEZONE}')::date;
 """

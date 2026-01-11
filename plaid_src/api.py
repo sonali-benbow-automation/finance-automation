@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify
 
 from db.db import db_conn
@@ -50,4 +51,6 @@ def create_app():
 
 
 if __name__ == "__main__":
-    create_app().run(host="0.0.0.0", port=5000, debug=True)
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    port = int(os.getenv("PORT", "5000"))
+    create_app().run(host="0.0.0.0", port=port, debug=debug)

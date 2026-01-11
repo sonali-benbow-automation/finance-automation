@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from config import TABLES, PLAID_ENV
 
 PLAID_ITEMS_TABLE = TABLES["plaid_items"]
@@ -44,6 +45,28 @@ def get_item(conn, plaid_item_pk):
         return dict(zip(cols, row))
 
 
+def get_item_id_by_label(conn, label):
+    sql = f"select item_id from {PLAID_ITEMS_TABLE} where label = %s;"
+    with conn.cursor() as cur:
+        cur.execute(sql, (label,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def archive_label(conn, label):
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    archived = f"{label}__archived__{ts}"
+    sql = f"""
+    update {PLAID_ITEMS_TABLE}
+    set label = %s,
+        updated_at = now()
+    where label = %s;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (archived, label))
+        return archived
+
+
 def upsert_item(
     conn,
     label,
@@ -56,6 +79,9 @@ def upsert_item(
     env=None,
 ):
     env_value = env or PLAID_ENV
+    existing_item_id = get_item_id_by_label(conn, label)
+    if existing_item_id and existing_item_id != item_id:
+        archive_label(conn, label)
     sql = f"""
     insert into {PLAID_ITEMS_TABLE}
       (label, env, institution_name, institution_id, item_id, access_token,
@@ -67,7 +93,6 @@ def upsert_item(
       env = excluded.env,
       institution_name = excluded.institution_name,
       institution_id = excluded.institution_id,
-      item_id = excluded.item_id,
       access_token = excluded.access_token,
       transactions_enabled = excluded.transactions_enabled,
       balances_enabled = excluded.balances_enabled,

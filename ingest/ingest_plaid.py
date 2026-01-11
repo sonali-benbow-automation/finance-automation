@@ -81,17 +81,22 @@ def ingest_transactions(conn, client, run_id):
         ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label, access_token)
 
 
-def main():
+def run_ingest():
     client = get_plaid_client()
     with db_conn() as conn:
-        run_id = create_run(conn, run_type="balances")
+        run_id = create_run(conn, run_type="daily_sync")
         try:
             ingest_balances(conn, client, run_id)
             ingest_transactions(conn, client, run_id)
             finish_run(conn, run_id, status="success")
+            return run_id
         except Exception as e:
             finish_run(conn, run_id, status="failed", error=str(e))
             raise
+
+
+def main():
+    run_ingest()
 
 
 if __name__ == "__main__":

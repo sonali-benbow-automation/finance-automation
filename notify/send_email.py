@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from config import TIMEZONE, NOTIFICATIONS_ENABLED
+from db.db import db_conn
+from db.repos.notifications import upsert_notification
 from notify.daily_summary import build_daily_summary_html
 
 load_dotenv()
@@ -20,8 +22,18 @@ def require_env(name):
     return value
 
 
-def send_daily_digest_email(subject=None, include_transactions=True):
+def send_daily_digest_email(run_id, subject=None, include_transactions=True):
+    channel = "email"
     if not NOTIFICATIONS_ENABLED:
+        with db_conn() as conn:
+            upsert_notification(
+                conn=conn,
+                run_id=run_id,
+                channel=channel,
+                status="skipped",
+                message="NOTIFICATIONS_ENABLED is false",
+                error=None,
+            )
         return {"skipped": True}
     smtp_user = require_env("SMTP_EMAIL")
     smtp_password = require_env("SMTP_PASS")
@@ -45,19 +57,32 @@ def send_daily_digest_email(subject=None, include_transactions=True):
             server.ehlo()
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
+        with db_conn() as conn:
+            upsert_notification(
+                conn=conn,
+                run_id=run_id,
+                channel=channel,
+                status="success",
+                message=f"to={to_addr} subject={subject}",
+                error=None,
+            )
         return {"subject": subject, "to": to_addr}
     except Exception as e:
-        raise RuntimeError(f"Email send failed: {e}") from e
+        err = str(e)
+        with db_conn() as conn:
+            upsert_notification(
+                conn=conn,
+                run_id=run_id,
+                channel=channel,
+                status="failed",
+                message=f"to={to_addr if 'to_addr' in locals() else ''} subject={subject if subject else ''}",
+                error=err,
+            )
+        raise RuntimeError(f"Email send failed: {err}") from e
 
 
 def main():
-    result = send_daily_digest_email()
-    if result.get("skipped"):
-        print("Notifications are disabled. Email not sent.")
-        return
-    print("Sent email")
-    print(f"To: {result['to']}")
-    print(f"Subject: {result['subject']}")
+    raise RuntimeError("Use daily_sync.py as the entry point for scheduled runs.")
 
 
 if __name__ == "__main__":
