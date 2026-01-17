@@ -83,7 +83,7 @@ def ingest_balances(conn, client, run_id):
         ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, access_token)
 
 
-def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label, access_token):
+def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, access_token):
     start_date = parse_start_date(TRANSACTIONS_START_DATE)
     included = get_included_accounts(conn, plaid_item_pk)
     cursor = get_transactions_cursor(conn, plaid_item_pk)

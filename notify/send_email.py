@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from config import TIMEZONE, NOTIFICATIONS_ENABLED
 from db.db import db_conn
 from db.repos.notifications import upsert_notification
-from notify.daily_summary import build_daily_summary_html
+from notify.pdf_report import build_daily_summary_pdf
 
 load_dotenv()
 
@@ -22,7 +22,7 @@ def require_env(name):
     return value
 
 
-def send_daily_digest_email(run_id, subject=None, include_transactions=True):
+def send_daily_digest_email(run_id, subject=None):
     channel = "email"
     if not NOTIFICATIONS_ENABLED:
         with db_conn() as conn:
@@ -43,13 +43,18 @@ def send_daily_digest_email(run_id, subject=None, include_transactions=True):
     to_addr = require_env("EMAIL_TO")
     if subject is None:
         date_label = datetime.now(TZ).strftime("%Y-%m-%d")
-        subject = f"Daily Finance Summary: {date_label}"
-    html_body = build_daily_summary_html(run_id=run_id, include_transactions=include_transactions)
+        subject = f"daily finance summary: {date_label}"
+    pdf_bytes = build_daily_summary_pdf(run_id)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"Finance Digest <{from_addr}>"
     msg["To"] = to_addr
-    msg.set_content(html_body, subtype="html")
+    msg.add_attachment(
+        pdf_bytes,
+        maintype="application",
+        subtype="pdf",
+        filename=f"daily_finance_summary_run_{run_id}.pdf",
+    )
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
             server.ehlo()
