@@ -1,3 +1,5 @@
+create extension if not exists pgcrypto;
+
 create table if not exists ${PLAID_ITEMS_TABLE} (
   id bigserial primary key,
   label text not null unique,
@@ -120,3 +122,92 @@ create table if not exists ${NOTIFICATIONS_TABLE} (
   constraint notifications_unique_run_channel
     unique (run_id, channel)
 );
+
+create table if not exists ${HOSTED_LINK_SESSIONS_TABLE} (
+  id bigserial primary key,
+  label text not null,
+  env text not null default 'sandbox',
+  link_token text not null unique,
+  hosted_link_url text not null,
+  webhook_url text not null,
+  status text not null default 'created'
+    check (status in ('created','success','failed')),
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists ${PLAID_WEBHOOK_EVENTS_TABLE} (
+  id bigserial primary key,
+  webhook_type text,
+  webhook_code text,
+  link_session_id text,
+  link_token text,
+  status text,
+  environment text,
+  raw jsonb not null,
+  received_at timestamptz not null default now()
+);
+
+create index if not exists idx_plaid_webhook_events_link_token
+  on ${PLAID_WEBHOOK_EVENTS_TABLE} (link_token);
+
+create index if not exists idx_plaid_webhook_events_received_at
+  on ${PLAID_WEBHOOK_EVENTS_TABLE} (received_at);
+
+
+
+alter table ${PLAID_ITEMS_TABLE} enable row level security;
+alter table ${ACCOUNTS_TABLE} enable row level security;
+alter table ${TRANSACTIONS_TABLE} enable row level security;
+alter table ${BALANCE_SNAPSHOTS_TABLE} enable row level security;
+alter table ${CURSORS_TABLE} enable row level security;
+alter table ${RUNS_TABLE} enable row level security;
+alter table ${NOTIFICATIONS_TABLE} enable row level security;
+alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
+alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
+
+
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+
+
+grant select, insert, update, delete on all tables in schema public to service_role;
+grant usage, select on all sequences in schema public to service_role;
+
+
+drop policy if exists service_role_all on ${PLAID_ITEMS_TABLE};
+create policy service_role_all on ${PLAID_ITEMS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${ACCOUNTS_TABLE};
+create policy service_role_all on ${ACCOUNTS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${TRANSACTIONS_TABLE};
+create policy service_role_all on ${TRANSACTIONS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${BALANCE_SNAPSHOTS_TABLE};
+create policy service_role_all on ${BALANCE_SNAPSHOTS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${CURSORS_TABLE};
+create policy service_role_all on ${CURSORS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${RUNS_TABLE};
+create policy service_role_all on ${RUNS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${NOTIFICATIONS_TABLE};
+create policy service_role_all on ${NOTIFICATIONS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${HOSTED_LINK_SESSIONS_TABLE};
+create policy service_role_all on ${HOSTED_LINK_SESSIONS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${PLAID_WEBHOOK_EVENTS_TABLE};
+create policy service_role_all on ${PLAID_WEBHOOK_EVENTS_TABLE}
+for all to service_role using (true) with check (true);

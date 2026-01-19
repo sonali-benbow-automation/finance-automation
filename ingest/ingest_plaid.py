@@ -3,7 +3,7 @@ from db.db import db_conn
 from plaid_src.client import get_plaid_client
 
 from db.repos.runs import create_run, finish_run
-from db.repos.items import list_items_for_balances, list_items_for_transactions
+from db.repos.items import list_items_for_balances, list_items_for_transactions, get_access_token
 from db.repos.accounts import upsert_account, get_included_accounts
 from db.repos.balances import upsert_balance_snapshot
 from db.repos.cursors import get_transactions_cursor, set_transactions_cursor
@@ -40,7 +40,10 @@ def tx_date_ok(tx, start_date):
     return date.fromisoformat(str(d)) >= start_date
 
 
-def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, access_token):
+def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
+    access_token = get_access_token(conn, plaid_item_pk)
+    if not access_token:
+        raise RuntimeError(f"Missing access token for plaid_item_pk={plaid_item_pk} label={label}")
     response = to_plain(client.accounts_balance_get({"access_token": access_token})) or {}
     accounts = response.get("accounts", []) or []
     for account_obj in accounts:
@@ -79,11 +82,14 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, access_
 
 def ingest_balances(conn, client, run_id):
     items = list_items_for_balances(conn)
-    for plaid_item_pk, label, access_token in items:
-        ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, access_token)
+    for plaid_item_pk, label in items:
+        ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label)
 
 
-def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, access_token):
+def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
+    access_token = get_access_token(conn, plaid_item_pk)
+    if not access_token:
+        raise RuntimeError(f"Missing access token for plaid_item_pk={plaid_item_pk} label={label}")
     start_date = parse_start_date(TRANSACTIONS_START_DATE)
     included = get_included_accounts(conn, plaid_item_pk)
     cursor = get_transactions_cursor(conn, plaid_item_pk)
@@ -121,8 +127,8 @@ def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, access_token):
 
 def ingest_transactions(conn, client, run_id):
     items = list_items_for_transactions(conn)
-    for plaid_item_pk, label, access_token in items:
-        ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label, access_token)
+    for plaid_item_pk, label in items:
+        ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label)
 
 
 def run_ingest():

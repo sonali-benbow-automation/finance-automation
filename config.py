@@ -14,6 +14,8 @@ TABLES = {
     "cursors": os.getenv("CURSORS_TABLE", "cursors"),
     "runs": os.getenv("RUNS_TABLE", "runs"),
     "notifications": os.getenv("NOTIFICATIONS_TABLE", "notifications"),
+    "hosted_link_sessions": os.getenv("HOSTED_LINK_SESSIONS_TABLE", "hosted_link_sessions"),
+    "plaid_webhook_events": os.getenv("PLAID_WEBHOOK_EVENTS_TABLE", "plaid_webhook_events"),
 }
 
 def table(name):
@@ -66,6 +68,11 @@ PLAID_CLIENT_ID = os.getenv("PLAID_CLIENT_ID")
 PLAID_SECRET = os.getenv("PLAID_SECRET")
 if not PLAID_CLIENT_ID or not PLAID_SECRET:
     raise RuntimeError("PLAID_CLIENT_ID and PLAID_SECRET are required")
+
+PLAID_TOKEN_KEY = os.getenv("PLAID_TOKEN_KEY")
+if not PLAID_TOKEN_KEY:
+    raise RuntimeError("PLAID_TOKEN_KEY is required")
+
 PLAID_HOSTS = {
     "sandbox": "https://sandbox.plaid.com",
     "production": "https://production.plaid.com",

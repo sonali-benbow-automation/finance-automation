@@ -4,7 +4,7 @@ from config import DATABASE_URL
 
 @contextmanager
 def db_conn():
-    conn = psycopg.connect(DATABASE_URL)
+    conn = psycopg.connect(DATABASE_URL, sslmode="require")
     try:
         yield conn
         conn.commit()

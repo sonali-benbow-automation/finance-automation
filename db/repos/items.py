@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
-from config import TABLES, PLAID_ENV
+
+from config import TABLES, PLAID_ENV, PLAID_TOKEN_KEY
 
 PLAID_ITEMS_TABLE = TABLES["plaid_items"]
 
@@ -28,7 +29,8 @@ def get_item(conn, plaid_item_pk):
       institution_name,
       institution_id,
       item_id,
-      access_token,
+      access_token_enc,
+      access_token_kid,
       transactions_enabled,
       balances_enabled,
       created_at,
@@ -73,7 +75,7 @@ def upsert_item(
     institution_name,
     institution_id,
     item_id,
-    access_token,
+    access_token_plaintext,
     transactions_enabled,
     balances_enabled,
     env=None,
@@ -84,16 +86,20 @@ def upsert_item(
         archive_label(conn, label)
     sql = f"""
     insert into {PLAID_ITEMS_TABLE}
-      (label, env, institution_name, institution_id, item_id, access_token,
+      (label, env, institution_name, institution_id, item_id,
+       access_token_enc, access_token_kid,
        transactions_enabled, balances_enabled, updated_at)
     values
-      (%s, %s, %s, %s, %s, %s,
+      (%s, %s, %s, %s, %s,
+       pgp_sym_encrypt(%s::text, %s::text), 'v1',
        %s, %s, now())
     on conflict (label) do update set
       env = excluded.env,
       institution_name = excluded.institution_name,
       institution_id = excluded.institution_id,
-      access_token = excluded.access_token,
+      item_id = excluded.item_id,
+      access_token_enc = excluded.access_token_enc,
+      access_token_kid = excluded.access_token_kid,
       transactions_enabled = excluded.transactions_enabled,
       balances_enabled = excluded.balances_enabled,
       updated_at = now()
@@ -108,7 +114,8 @@ def upsert_item(
                 institution_name,
                 institution_id,
                 item_id,
-                access_token,
+                access_token_plaintext,
+                PLAID_TOKEN_KEY,
                 transactions_enabled,
                 balances_enabled,
             ),
@@ -116,10 +123,22 @@ def upsert_item(
         return cur.fetchone()[0]
 
 
+def get_access_token(conn, plaid_item_pk):
+    sql = f"""
+    select pgp_sym_decrypt(access_token_enc, %s::text)::text as access_token
+    from {PLAID_ITEMS_TABLE}
+    where id = %s;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (PLAID_TOKEN_KEY, plaid_item_pk))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
 def list_items_for_balances(conn, env=None):
     env_value = env or PLAID_ENV
     sql = f"""
-    select id, label, access_token
+    select id, label
     from {PLAID_ITEMS_TABLE}
     where balances_enabled = true
       and env = %s
@@ -133,7 +152,7 @@ def list_items_for_balances(conn, env=None):
 def list_items_for_transactions(conn, env=None):
     env_value = env or PLAID_ENV
     sql = f"""
-    select id, label, access_token
+    select id, label
     from {PLAID_ITEMS_TABLE}
     where transactions_enabled = true
       and env = %s

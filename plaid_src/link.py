@@ -16,20 +16,32 @@ def create_link_token(
     country_codes=None,
     language="en",
     redirect_uri=None,
+    webhook=None,
+    hosted_link=False,
 ):
     client = get_plaid_client()
     products = products or ["transactions"]
     country_codes = country_codes or ["US"]
-    req = LinkTokenCreateRequest(
+    kwargs = dict(
         user=LinkTokenCreateRequestUser(client_user_id=str(user_id)),
         client_name=client_name,
         products=[Products(p) for p in products],
         country_codes=[CountryCode(c) for c in country_codes],
         language=language,
-        redirect_uri=redirect_uri,
     )
+    if redirect_uri:
+        kwargs["redirect_uri"] = str(redirect_uri)
+    if webhook:
+        kwargs["webhook"] = str(webhook)
+    # Hosted Link: pass an empty object. The API expects hosted_link to be an object. :contentReference[oaicite:1]{index=1}
+    if hosted_link:
+        kwargs["hosted_link"] = {}
+    req = LinkTokenCreateRequest(**kwargs)
     resp = client.link_token_create(req)
-    return resp["link_token"]
+    out = {"link_token": resp["link_token"]}
+    if resp.get("hosted_link_url"):
+        out["hosted_link_url"] = resp["hosted_link_url"]
+    return out
 
 
 def exchange_public_token_and_store_item(
@@ -52,7 +64,7 @@ def exchange_public_token_and_store_item(
         institution_name=institution_name,
         institution_id=institution_id,
         item_id=item_id,
-        access_token=access_token,
+        access_token_plaintext=access_token,
         transactions_enabled=transactions_enabled,
         balances_enabled=balances_enabled,
         env=PLAID_ENV,

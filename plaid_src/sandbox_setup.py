@@ -77,7 +77,7 @@ def main():
                 institution_name=matched_name,
                 institution_id=institution_id,
                 item_id=item_id,
-                access_token=access_token,
+                access_token_plaintext=access_token,
                 transactions_enabled=plan.get("transactions_enabled", False),
                 balances_enabled=plan.get("balances_enabled", True),
             )
