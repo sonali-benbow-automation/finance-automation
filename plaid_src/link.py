@@ -2,7 +2,10 @@ from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
 from plaid.model.country_code import CountryCode
+
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_get_request import ItemGetRequest
+from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
 
 from config import PLAID_ENV
 from plaid_src.client import get_plaid_client
@@ -33,7 +36,6 @@ def create_link_token(
         kwargs["redirect_uri"] = str(redirect_uri)
     if webhook:
         kwargs["webhook"] = str(webhook)
-    # Hosted Link: pass an empty object. The API expects hosted_link to be an object. :contentReference[oaicite:1]{index=1}
     if hosted_link:
         kwargs["hosted_link"] = {}
     req = LinkTokenCreateRequest(**kwargs)
@@ -47,9 +49,7 @@ def create_link_token(
 def exchange_public_token_and_store_item(
     conn,
     public_token,
-    label,
-    institution_name,
-    institution_id,
+    label=None,
     transactions_enabled=True,
     balances_enabled=True,
 ):
@@ -58,9 +58,25 @@ def exchange_public_token_and_store_item(
     exch_resp = client.item_public_token_exchange(exch_req)
     access_token = exch_resp["access_token"]
     item_id = exch_resp["item_id"]
+    item_resp = client.item_get(ItemGetRequest(access_token=access_token))
+    item = item_resp.get("item") or {}
+    institution_id = item.get("institution_id")
+    if not institution_id:
+        raise RuntimeError("Plaid item/get did not return institution_id")
+    inst_resp = client.institutions_get_by_id(
+        InstitutionsGetByIdRequest(
+            institution_id=institution_id,
+            country_codes=[CountryCode("US")],
+        )
+    )
+    inst = inst_resp.get("institution") or {}
+    institution_name = inst.get("name")
+    if not institution_name:
+        raise RuntimeError("Plaid institutions/get_by_id did not return institution name")
+    resolved_label = label if (isinstance(label, str) and label.strip()) else institution_name.strip()
     plaid_item_pk = upsert_item(
         conn,
-        label=label,
+        label=resolved_label,
         institution_name=institution_name,
         institution_id=institution_id,
         item_id=item_id,
@@ -69,4 +85,4 @@ def exchange_public_token_and_store_item(
         balances_enabled=balances_enabled,
         env=PLAID_ENV,
     )
-    return plaid_item_pk, item_id
+    return plaid_item_pk, item_id, resolved_label

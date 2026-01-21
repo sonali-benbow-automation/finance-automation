@@ -1,13 +1,14 @@
 create extension if not exists pgcrypto;
 
-create table if not exists ${PLAID_ITEMS_TABLE} (
+create table if not exists plaid_items (
   id bigserial primary key,
   label text not null unique,
   env text not null default 'sandbox',
   institution_name text not null,
   institution_id text not null,
   item_id text not null unique,
-  access_token text not null,
+  access_token_enc bytea not null,
+  access_token_kid text not null default 'v1',
   transactions_enabled boolean not null default false,
   balances_enabled boolean not null default true,
   created_at timestamptz not null default now(),
