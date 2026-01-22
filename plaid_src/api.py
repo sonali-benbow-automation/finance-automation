@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 from db.db import db_conn
 from plaid_src.auth import require_admin
@@ -12,6 +12,7 @@ from db.repos.hosted_link_sessions import (
     mark_failed,
 )
 from db.repos.webhook_events import insert_event
+from config import PLAID_REDIRECT_URI
 
 
 def create_app():
@@ -20,7 +21,9 @@ def create_app():
     @app.get("/health")
     def health():
         return jsonify({"ok": True})
-
+    @app.get("/plaid/redirect")
+    def plaid_redirect():
+        return Response("ok", mimetype="text/plain")
     @app.post("/api/plaid/hosted_link/create")
     def plaid_hosted_link_create():
         if not require_admin():
@@ -37,7 +40,7 @@ def create_app():
             products=data.get("products") or ["transactions"],
             country_codes=data.get("country_codes") or ["US"],
             language=data.get("language") or "en",
-            redirect_uri=None,
+            redirect_uri=PLAID_REDIRECT_URI,
             webhook=webhook_url,
             hosted_link=True,
         )

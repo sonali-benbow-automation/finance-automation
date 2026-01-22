@@ -65,7 +65,7 @@ def get_sandbox_plans():
 
 PLAID_ENV = os.getenv("PLAID_ENV", "sandbox")
 PLAID_CLIENT_ID = os.getenv("PLAID_CLIENT_ID")
-PLAID_SECRET = os.getenv("PLAID_SECRET")
+PLAID_SECRET = os.getenv("PLAID_SANDBOX_SECRET" if PLAID_ENV == "sandbox" else "PLAID_PRODUCTION_SECRET")
 if not PLAID_CLIENT_ID or not PLAID_SECRET:
     raise RuntimeError("PLAID_CLIENT_ID and PLAID_SECRET are required")
 
@@ -78,6 +78,8 @@ PLAID_HOSTS = {
     "production": "https://production.plaid.com",
 }
 PLAID_HOST = PLAID_HOSTS[PLAID_ENV]
+
+PLAID_REDIRECT_URI = os.getenv("PLAID_REDIRECT_URI")
 
 
 INGEST_TRANSACTIONS_DEFAULT = True
