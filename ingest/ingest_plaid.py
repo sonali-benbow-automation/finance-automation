@@ -8,7 +8,7 @@ from db.repos.accounts import upsert_account, get_included_accounts
 from db.repos.balances import upsert_balance_snapshot
 from db.repos.cursors import get_transactions_cursor, set_transactions_cursor
 from db.repos.transactions import upsert_transaction, mark_transaction_removed
-from config import TRANSACTIONS_START_DATE
+from config import TRANSACTIONS_START_DATE, PLAID_ENV
 
 
 def to_plain(obj):
@@ -80,8 +80,8 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
         )
 
 
-def ingest_balances(conn, client, run_id):
-    items = list_items_for_balances(conn)
+def ingest_balances(conn, client, run_id, env):
+    items = list_items_for_balances(conn, env=env)
     for plaid_item_pk, label in items:
         ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label)
 
@@ -125,19 +125,20 @@ def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
         has_more = resp.get("has_more", False)
 
 
-def ingest_transactions(conn, client, run_id):
-    items = list_items_for_transactions(conn)
+def ingest_transactions(conn, client, run_id, env):
+    items = list_items_for_transactions(conn, env=env)
     for plaid_item_pk, label in items:
         ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label)
 
 
-def run_ingest():
+def run_ingest(env=None):
+    env_value = env or PLAID_ENV
     client = get_plaid_client()
     with db_conn() as conn:
-        run_id = create_run(conn, run_type="daily_sync")
+        run_id = create_run(conn, run_type="daily_sync", env=env_value)
         try:
-            ingest_balances(conn, client, run_id)
-            ingest_transactions(conn, client, run_id)
+            ingest_balances(conn, client, run_id, env_value)
+            ingest_transactions(conn, client, run_id, env_value)
             finish_run(conn, run_id, status="success")
             return run_id
         except Exception as e:

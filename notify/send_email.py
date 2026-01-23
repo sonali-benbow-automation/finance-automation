@@ -43,7 +43,7 @@ def send_daily_digest_email(run_id, subject=None):
     to_addr = require_env("EMAIL_TO")
     if subject is None:
         date_label = datetime.now(TZ).strftime("%Y-%m-%d")
-        subject = f"daily finance summary: {date_label}"
+        subject = f"daily finance summary | {date_label}"
     pdf_bytes = build_daily_summary_pdf(run_id)
     msg = EmailMessage()
     msg["Subject"] = subject

@@ -70,6 +70,43 @@ def make_table(data, col_widths, numeric_cols=None):
     return t
 
 
+def make_balances_table(rows):
+    data = [["account", "type", "subtype", "balance"]]
+    for r in rows:
+        row_type = r.get("row_type")
+        name = r.get("account_name")
+        if row_type == "total":
+            name = "net_worth"
+        data.append(
+            [
+                truncate(name, 28),
+                truncate(r.get("account_type"), 10),
+                truncate(r.get("account_subtype"), 12),
+                net_plain(r.get("signed_current")),
+            ]
+        )
+    t = make_table(
+        data,
+        col_widths=[2.65 * inch, 1.05 * inch, 1.25 * inch, 1.20 * inch],
+        numeric_cols={3},
+    )
+    total_row_idx = None
+    for i in range(1, len(rows) + 1):
+        if (rows[i - 1].get("row_type") or "").lower() == "total":
+            total_row_idx = i
+            break
+    if total_row_idx is not None:
+        t.setStyle(
+            TableStyle(
+                [
+                    ("FONTNAME", (0, total_row_idx), (-1, total_row_idx), "Courier-Bold"),
+                    ("BACKGROUND", (0, total_row_idx), (-1, total_row_idx), colors.HexColor("#E9ECEF")),
+                ]
+            )
+        )
+    return t
+
+
 def build_daily_summary_pdf(run_id):
     d = build_daily_summary_data(run_id)
     today_spent = to_decimal(d.get("today_spent"))
@@ -84,7 +121,7 @@ def build_daily_summary_pdf(run_id):
     ytd_spent = to_decimal(d.get("ytd_spent"))
     ytd_received = to_decimal(d.get("ytd_received"))
     ytd_net = ytd_received - ytd_spent
-    net_worth = to_decimal(d.get("net_worth"))
+    balances = d.get("balances") or []
     txs = d.get("transactions") or []
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -151,7 +188,12 @@ def build_daily_summary_pdf(run_id):
         )
     )
     story.append(Spacer(1, 14))
-    story.append(Paragraph(f"net_worth: {money_plain(net_worth)}", mono))
+    story.append(Paragraph("account_balances", mono_bold))
+    story.append(Spacer(1, 4))
+    if not balances:
+        story.append(Paragraph("No balances for this run.", mono))
+    else:
+        story.append(KeepTogether(make_balances_table(balances)))
     story.append(Spacer(1, 14))
     story.append(Paragraph("transactions_delta", mono_bold))
     story.append(Spacer(1, 4))

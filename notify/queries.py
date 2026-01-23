@@ -23,6 +23,57 @@ where id = %s;
 """
 
 
+BALANCES_FOR_RUN = f"""
+with per_account as (
+  select
+    coalesce(nullif(a.official_name, ''), nullif(a.name, ''), a.account_id) as account_name,
+    a.type as account_type,
+    a.subtype as account_subtype,
+    case
+      when a.type in ('credit', 'loan') then -abs(coalesce(bs.current, 0))
+      else coalesce(bs.current, 0)
+    end as signed_current
+  from {BALANCE_SNAPSHOTS_TABLE} bs
+  join {ACCOUNTS_TABLE} a
+    on a.id = bs.account_pk
+  where bs.run_id = %s
+    and a.include_in_app = true
+    and a.active = true
+),
+unioned as (
+  select
+    'account' as row_type,
+    account_name,
+    account_type,
+    account_subtype,
+    signed_current,
+    0 as sort_key
+  from per_account
+  union all
+  select
+    'total' as row_type,
+    'net_worth' as account_name,
+    null as account_type,
+    null as account_subtype,
+    coalesce(sum(signed_current), 0) as signed_current,
+    1 as sort_key
+  from per_account
+)
+select
+  row_type,
+  account_name,
+  account_type,
+  account_subtype,
+  signed_current
+from unioned
+order by
+  sort_key,
+  account_type nulls last,
+  account_subtype nulls last,
+  account_name;
+"""
+
+
 NET_WORTH_FOR_RUN = f"""
 select
   coalesce(sum(

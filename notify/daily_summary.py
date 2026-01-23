@@ -12,6 +12,7 @@ from notify.queries import (
     MTD_TOTALS,
     YTD_TOTALS,
     POSTED_TRANSACTIONS_FOR_RUN,
+    BALANCES_FOR_RUN,
 )
 
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
@@ -53,6 +54,7 @@ def build_daily_summary_data(run_id, include_transactions=True):
         mtd = fetch_one(conn, MTD_TOTALS)
         ytd = fetch_one(conn, YTD_TOTALS)
         net = fetch_one(conn, NET_WORTH_FOR_RUN, (run_id,))
+        balances = fetch_all(conn, BALANCES_FOR_RUN, (run_id,))
         txs = fetch_all(conn, POSTED_TRANSACTIONS_FOR_RUN, (run_id,)) if include_transactions else []
     return {
         "run_id": run_id,
@@ -67,5 +69,6 @@ def build_daily_summary_data(run_id, include_transactions=True):
         "ytd_spent": to_decimal(ytd.get("ytd_spent")),
         "ytd_received": to_decimal(ytd.get("ytd_received")),
         "net_worth": to_decimal(net.get("net_worth")),
+        "balances": balances,
         "transactions": txs,
     }
