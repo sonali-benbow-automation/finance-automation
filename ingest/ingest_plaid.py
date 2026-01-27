@@ -81,7 +81,7 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
 
 
 def ingest_balances(conn, client, run_id, env):
-    items = list_items_for_balances(conn, env=env)
+    items = list_items_for_balances(conn, env_override=env)
     for plaid_item_pk, label in items:
         ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label)
 
@@ -93,6 +93,7 @@ def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
     start_date = parse_start_date(TRANSACTIONS_START_DATE)
     included = get_included_accounts(conn, plaid_item_pk)
     cursor = get_transactions_cursor(conn, plaid_item_pk)
+    next_cursor_value = cursor
     has_more = True
     while has_more:
         req = {"access_token": access_token}
@@ -120,13 +121,16 @@ def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
             tx_id = removed.get("transaction_id")
             if tx_id:
                 mark_transaction_removed(conn, run_id, tx_id)
-        cursor = resp["next_cursor"]
-        set_transactions_cursor(conn, plaid_item_pk, cursor)
-        has_more = resp.get("has_more", False)
+        next_cursor_value = resp.get("next_cursor")
+        if not next_cursor_value:
+            raise RuntimeError(f"transactions_sync missing next_cursor for plaid_item_pk={plaid_item_pk} label={label}")
+        cursor = next_cursor_value
+        has_more = bool(resp.get("has_more", False))
+    set_transactions_cursor(conn, plaid_item_pk, next_cursor_value)
 
 
 def ingest_transactions(conn, client, run_id, env):
-    items = list_items_for_transactions(conn, env=env)
+    items = list_items_for_transactions(conn, env_override=env)
     for plaid_item_pk, label in items:
         ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label)
 
@@ -136,14 +140,19 @@ def run_ingest(env=None):
     client = get_plaid_client()
     with db_conn() as conn:
         run_id = create_run(conn, run_type="daily_sync", env=env_value)
-        try:
+    try:
+        with db_conn() as conn:
             ingest_balances(conn, client, run_id, env_value)
             ingest_transactions(conn, client, run_id, env_value)
-            finish_run(conn, run_id, status="success")
-            return run_id
-        except Exception as e:
+    except Exception as e:
+        with db_conn() as conn:
             finish_run(conn, run_id, status="failed", error=str(e))
-            raise
+        raise
+    with db_conn() as conn:
+        finish_run(conn, run_id, status="success", error=None)
+    return run_id
+
+
 
 
 def main():

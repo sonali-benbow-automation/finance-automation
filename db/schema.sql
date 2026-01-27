@@ -1,8 +1,8 @@
 create extension if not exists pgcrypto;
 
-create table if not exists plaid_items (
+create table if not exists ${PLAID_ITEMS_TABLE} (
   id bigserial primary key,
-  label text not null unique,
+  label text not null,
   env text not null default 'sandbox',
   institution_name text not null,
   institution_id text not null,
@@ -11,8 +11,11 @@ create table if not exists plaid_items (
   access_token_kid text not null default 'v1',
   transactions_enabled boolean not null default false,
   balances_enabled boolean not null default true,
+  active boolean not null default true,
+  archived_at timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint plaid_items_unique_env_label unique (env, label)
 );
 
 create table if not exists ${RUNS_TABLE} (
@@ -156,8 +159,6 @@ create index if not exists idx_plaid_webhook_events_link_token
 create index if not exists idx_plaid_webhook_events_received_at
   on ${PLAID_WEBHOOK_EVENTS_TABLE} (received_at);
 
-
-
 alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${TRANSACTIONS_TABLE} enable row level security;
@@ -168,14 +169,11 @@ alter table ${NOTIFICATIONS_TABLE} enable row level security;
 alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
 alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
 
-
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
 
-
 grant select, insert, update, delete on all tables in schema public to service_role;
 grant usage, select on all sequences in schema public to service_role;
-
 
 drop policy if exists service_role_all on ${PLAID_ITEMS_TABLE};
 create policy service_role_all on ${PLAID_ITEMS_TABLE}

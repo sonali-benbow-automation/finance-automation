@@ -7,7 +7,6 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
 
-from config import PLAID_ENV
 from plaid_src.client import get_plaid_client
 from db.repos.items import upsert_item
 
@@ -49,6 +48,7 @@ def create_link_token(
 def exchange_public_token_and_store_item(
     conn,
     public_token,
+    env,
     label=None,
     transactions_enabled=True,
     balances_enabled=True,
@@ -83,6 +83,6 @@ def exchange_public_token_and_store_item(
         access_token_plaintext=access_token,
         transactions_enabled=transactions_enabled,
         balances_enabled=balances_enabled,
-        env=PLAID_ENV,
+        env_override=env,
     )
     return plaid_item_pk, item_id, resolved_label

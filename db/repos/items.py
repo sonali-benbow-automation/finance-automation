@@ -1,21 +1,42 @@
-from datetime import datetime, timezone
-
 from config import TABLES, PLAID_ENV, PLAID_TOKEN_KEY
 
 PLAID_ITEMS_TABLE = TABLES["plaid_items"]
 
 
-def item_exists(conn, label):
-    sql = f"select 1 from {PLAID_ITEMS_TABLE} where label = %s limit 1;"
+def resolve_env(env_override):
+    return env_override if env_override is not None else PLAID_ENV
+
+
+def item_exists(conn, label, env_override=None, active_only=True):
+    env_value = resolve_env(env_override)
+    active_clause = "and active = true" if active_only else ""
+    sql = f"""
+    select 1
+    from {PLAID_ITEMS_TABLE}
+    where env = %s
+      and label = %s
+      {active_clause}
+    limit 1;
+    """
     with conn.cursor() as cur:
-        cur.execute(sql, (label,))
+        cur.execute(sql, (env_value, label))
         return cur.fetchone() is not None
 
 
-def get_plaid_item_pk(conn, label):
-    sql = f"select id from {PLAID_ITEMS_TABLE} where label = %s;"
+def get_plaid_item_pk(conn, label, env_override=None, active_only=True):
+    env_value = resolve_env(env_override)
+    active_clause = "and active = true" if active_only else ""
+    sql = f"""
+    select id
+    from {PLAID_ITEMS_TABLE}
+    where env = %s
+      and label = %s
+      {active_clause}
+    order by id desc
+    limit 1;
+    """
     with conn.cursor() as cur:
-        cur.execute(sql, (label,))
+        cur.execute(sql, (env_value, label))
         row = cur.fetchone()
         return row[0] if row else None
 
@@ -33,6 +54,8 @@ def get_item(conn, plaid_item_pk):
       access_token_kid,
       transactions_enabled,
       balances_enabled,
+      active,
+      archived_at,
       created_at,
       updated_at
     from {PLAID_ITEMS_TABLE}
@@ -47,26 +70,38 @@ def get_item(conn, plaid_item_pk):
         return dict(zip(cols, row))
 
 
-def get_item_id_by_label(conn, label):
-    sql = f"select item_id from {PLAID_ITEMS_TABLE} where label = %s;"
+def get_item_id_by_label(conn, label, env_override=None, active_only=True):
+    env_value = resolve_env(env_override)
+    active_clause = "and active = true" if active_only else ""
+    sql = f"""
+    select item_id
+    from {PLAID_ITEMS_TABLE}
+    where env = %s
+      and label = %s
+      {active_clause}
+    order by id desc
+    limit 1;
+    """
     with conn.cursor() as cur:
-        cur.execute(sql, (label,))
+        cur.execute(sql, (env_value, label))
         row = cur.fetchone()
         return row[0] if row else None
 
 
-def archive_label(conn, label):
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    archived = f"{label}__archived__{ts}"
+def deactivate_label(conn, label, env_override=None):
+    env_value = resolve_env(env_override)
     sql = f"""
     update {PLAID_ITEMS_TABLE}
-    set label = %s,
+    set active = false,
+        archived_at = now(),
         updated_at = now()
-    where label = %s;
+    where env = %s
+      and label = %s
+      and active = true;
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (archived, label))
-        return archived
+        cur.execute(sql, (env_value, label))
+        return cur.rowcount
 
 
 def upsert_item(
@@ -78,23 +113,24 @@ def upsert_item(
     access_token_plaintext,
     transactions_enabled,
     balances_enabled,
-    env=None,
+    env_override=None,
 ):
-    env_value = env or PLAID_ENV
-    existing_item_id = get_item_id_by_label(conn, label)
+    env_value = resolve_env(env_override)
+    existing_item_id = get_item_id_by_label(conn, label, env_override=env_value, active_only=True)
     if existing_item_id and existing_item_id != item_id:
-        archive_label(conn, label)
+        deactivate_label(conn, label, env_override=env_value)
     sql = f"""
     insert into {PLAID_ITEMS_TABLE}
       (label, env, institution_name, institution_id, item_id,
        access_token_enc, access_token_kid,
-       transactions_enabled, balances_enabled, updated_at)
+       transactions_enabled, balances_enabled,
+       active, archived_at, updated_at)
     values
       (%s, %s, %s, %s, %s,
        pgp_sym_encrypt(%s::text, %s::text), 'v1',
-       %s, %s, now())
-    on conflict (label) do update set
-      env = excluded.env,
+       %s, %s,
+       true, null, now())
+    on conflict (env, label) do update set
       institution_name = excluded.institution_name,
       institution_id = excluded.institution_id,
       item_id = excluded.item_id,
@@ -102,6 +138,8 @@ def upsert_item(
       access_token_kid = excluded.access_token_kid,
       transactions_enabled = excluded.transactions_enabled,
       balances_enabled = excluded.balances_enabled,
+      active = true,
+      archived_at = null,
       updated_at = now()
     returning id;
     """
@@ -135,13 +173,14 @@ def get_access_token(conn, plaid_item_pk):
         return row[0] if row else None
 
 
-def list_items_for_balances(conn, env=None):
-    env_value = env or PLAID_ENV
+def list_items_for_balances(conn, env_override=None):
+    env_value = resolve_env(env_override)
     sql = f"""
     select id, label
     from {PLAID_ITEMS_TABLE}
     where balances_enabled = true
       and env = %s
+      and active = true
     order by id;
     """
     with conn.cursor() as cur:
@@ -149,13 +188,14 @@ def list_items_for_balances(conn, env=None):
         return cur.fetchall()
 
 
-def list_items_for_transactions(conn, env=None):
-    env_value = env or PLAID_ENV
+def list_items_for_transactions(conn, env_override=None):
+    env_value = resolve_env(env_override)
     sql = f"""
     select id, label
     from {PLAID_ITEMS_TABLE}
     where transactions_enabled = true
       and env = %s
+      and active = true
     order by id;
     """
     with conn.cursor() as cur:

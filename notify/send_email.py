@@ -44,7 +44,29 @@ def send_daily_digest_email(run_id, subject=None):
     if subject is None:
         date_label = datetime.now(TZ).strftime("%Y-%m-%d")
         subject = f"daily finance summary | {date_label}"
-    pdf_bytes = build_daily_summary_pdf(run_id)
+    with db_conn() as conn:
+        upsert_notification(
+            conn=conn,
+            run_id=run_id,
+            channel=channel,
+            status="running",
+            message="starting pdf build",
+            error=None,
+        )
+    try:
+        pdf_bytes = build_daily_summary_pdf(run_id)
+    except Exception as e:
+        err = str(e)
+        with db_conn() as conn:
+            upsert_notification(
+                conn=conn,
+                run_id=run_id,
+                channel=channel,
+                status="failed",
+                message="pdf build failed",
+                error=err,
+            )
+        raise
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"Finance Digest <{from_addr}>"

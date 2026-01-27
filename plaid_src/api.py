@@ -13,6 +13,15 @@ from db.repos.hosted_link_sessions import (
 )
 from db.repos.webhook_events import insert_event
 from config import PLAID_REDIRECT_URI
+import copy
+
+
+def redact_plaid_payload(payload):
+    p = copy.deepcopy(payload or {})
+    p.pop("public_tokens", None)
+    p.pop("public_token", None)
+    p.pop("access_token", None)
+    return p
 
 
 def create_app():
@@ -82,12 +91,12 @@ def create_app():
                 "updated_at": str(sess.get("updated_at")) if sess.get("updated_at") else None,
             }
         )
-
     @app.post("/api/plaid/webhook")
     def plaid_webhook():
         payload = request.get_json(force=True) or {}
+        redacted_payload = redact_plaid_payload(payload)
         with db_conn() as conn:
-            insert_event(conn, payload)
+            insert_event(conn, redacted_payload)
         webhook_type = payload.get("webhook_type")
         webhook_code = payload.get("webhook_code")
         if webhook_type == "LINK" and webhook_code == "EVENTS":
@@ -132,6 +141,7 @@ def create_app():
                 plaid_item_pk, item_id, item_label = exchange_public_token_and_store_item(
                     conn=conn,
                     public_token=public_token,
+                    env=sess["env"],
                     label=None,
                     transactions_enabled=True,
                     balances_enabled=True,
