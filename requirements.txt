@@ -1,5 +1,5 @@
-flask
-plaid-python
-gspread
-protobuf
-python-dotenv
+psycopg~=3.3.2
+reportlab~=4.4.9
+python-dotenv~=1.2.1
+Flask~=3.1.2
+plaid-python~=38.1.0

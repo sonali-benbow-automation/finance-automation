@@ -5,6 +5,7 @@ PLAID_ITEMS_TABLE = TABLES["plaid_items"]
 ACCOUNTS_TABLE = TABLES["accounts"]
 BALANCE_SNAPSHOTS_TABLE = TABLES["balance_snapshots"]
 TRANSACTIONS_TABLE = TABLES["transactions"]
+MERCHANT_RULES_TABLE = TABLES["merchant_rules"]
 
 SQL_TZ = TIMEZONE or "America/New_York"
 
@@ -138,23 +139,6 @@ order by
 """
 
 
-NET_WORTH_FOR_RUN = f"""
-select
-  coalesce(sum(
-    case
-      when a.type in ('credit', 'loan') then -abs(coalesce(bs.current, 0))
-      else coalesce(bs.current, 0)
-    end
-  ), 0) as net_worth
-from {BALANCE_SNAPSHOTS_TABLE} bs
-join {ACCOUNTS_TABLE} a
-  on a.id = bs.account_pk
-where bs.run_id = %s
-  and a.include_in_app = true
-  and a.active = true;
-"""
-
-
 TODAY_TOTALS_FOR_RUN = f"""
 select
   coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as today_spent,
@@ -171,26 +155,115 @@ where a.include_in_app = true
 
 
 POSTED_TRANSACTIONS_FOR_RUN = f"""
+with classified_transactions as (
+  with tx_base as (
+    select
+      t.id as tx_pk,
+      t.transaction_id,
+      t.account_pk,
+      t.amount,
+      t.date,
+      t.name,
+      t.merchant_name,
+      t.pending,
+      t.removed,
+      t.first_seen_run_id,
+      t.last_seen_run_id,
+      coalesce(nullif(t.merchant_name, ''), nullif(t.name, '')) as effective_merchant
+    from {TRANSACTIONS_TABLE} t
+  ),
+  matching_rules as (
+    select
+      b.tx_pk,
+      r.id as rule_id,
+      r.classification,
+      r.behavior_axis,
+      r.category,
+      r.priority
+    from tx_base b
+    join {ACCOUNTS_TABLE} a
+      on a.id = b.account_pk
+    join {PLAID_ITEMS_TABLE} pi
+      on pi.id = a.plaid_item_pk
+    join {MERCHANT_RULES_TABLE} r
+      on r.env = pi.env
+     and r.active = true
+     and b.effective_merchant is not null
+     and (
+       (r.match_type = 'ilike'
+        and b.effective_merchant ilike ('%' || r.pattern || '%'))
+       or
+       (r.match_type = 'contains'
+        and position(r.pattern in b.effective_merchant) > 0)
+       or
+       (r.match_type = 'regex'
+        and b.effective_merchant ~* r.pattern)
+     )
+  ),
+  ranked_rules as (
+    select
+      m.*,
+      row_number() over (
+        partition by m.tx_pk
+        order by m.priority asc, m.rule_id asc
+      ) as rn
+    from matching_rules m
+  ),
+  best_rule as (
+    select
+      tx_pk,
+      rule_id as matched_rule_id,
+      classification,
+      behavior_axis,
+      category
+    from ranked_rules
+    where rn = 1
+  )
+  select
+    b.tx_pk,
+    b.transaction_id,
+    b.account_pk,
+    b.amount,
+    b.date,
+    b.name,
+    b.merchant_name,
+    b.effective_merchant,
+    b.pending,
+    b.removed,
+    b.first_seen_run_id,
+    b.last_seen_run_id,
+    br.matched_rule_id,
+    br.classification,
+    br.behavior_axis,
+    br.category
+  from tx_base b
+  left join best_rule br
+    on br.tx_pk = b.tx_pk
+)
 select
-  t.date,
-  t.name,
-  t.merchant_name,
-  t.amount,
+  ct.date,
+  ct.name,
+  ct.merchant_name,
+  ct.effective_merchant,
+  ct.amount,
   a.account_id,
   a.name as account_name,
   pi.label as item_label,
-  t.sync_status
-from {TRANSACTIONS_TABLE} t
+  ct.classification,
+  ct.behavior_axis,
+  ct.category,
+  ct.matched_rule_id
+from classified_transactions ct
 join {ACCOUNTS_TABLE} a
-  on a.id = t.account_pk
+  on a.id = ct.account_pk
 join {PLAID_ITEMS_TABLE} pi
   on pi.id = a.plaid_item_pk
 where a.include_in_app = true
   and a.active = true
-  and t.removed = false
-  and coalesce(t.pending, false) = false
-  and t.last_seen_run_id = %s
-order by t.date desc, t.amount desc;
+  and ct.removed = false
+  and coalesce(ct.pending, false) = false
+  and ct.last_seen_run_id = %s
+order by ct.date desc, ct.amount desc;
 """
 
 

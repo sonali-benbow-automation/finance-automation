@@ -159,6 +159,32 @@ create index if not exists idx_plaid_webhook_events_link_token
 create index if not exists idx_plaid_webhook_events_received_at
   on ${PLAID_WEBHOOK_EVENTS_TABLE} (received_at);
 
+create table if not exists ${MERCHANT_RULES_TABLE} (
+  id bigserial primary key,
+  env text not null default 'sandbox',
+  match_type text not null default 'ilike'
+    check (match_type in ('ilike','regex','contains')),
+  pattern text not null,
+  classification text not null
+    check (classification in (
+      'expense',
+      'income',
+      'cash_in_non_income',
+      'transfer',
+      'invest',
+      'fee',
+      'ignore'
+    )),
+  behavior_axis text
+    check (behavior_axis in ('necessity','discretionary')),
+  category text,
+  priority integer not null default 100,
+  active boolean not null default true,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${TRANSACTIONS_TABLE} enable row level security;
@@ -168,6 +194,7 @@ alter table ${RUNS_TABLE} enable row level security;
 alter table ${NOTIFICATIONS_TABLE} enable row level security;
 alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
 alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
+alter table ${MERCHANT_RULES_TABLE} enable row level security;
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
@@ -209,4 +236,8 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${PLAID_WEBHOOK_EVENTS_TABLE};
 create policy service_role_all on ${PLAID_WEBHOOK_EVENTS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${MERCHANT_RULES_TABLE};
+create policy service_role_all on ${MERCHANT_RULES_TABLE}
 for all to service_role using (true) with check (true);

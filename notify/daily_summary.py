@@ -6,13 +6,12 @@ from config import TIMEZONE
 from db.db import db_conn
 from notify.queries import (
     RUN_META,
-    NET_WORTH_FOR_RUN,
     TODAY_TOTALS_FOR_RUN,
     WTD_TOTALS,
     MTD_TOTALS,
     YTD_TOTALS,
     POSTED_TRANSACTIONS_FOR_RUN,
-    BALANCES_FOR_RUN,
+    BALANCES_WITH_PREV_FOR_RUN
 )
 
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
