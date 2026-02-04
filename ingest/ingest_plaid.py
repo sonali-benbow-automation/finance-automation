@@ -44,7 +44,7 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
     access_token = get_access_token(conn, plaid_item_pk)
     if not access_token:
         raise RuntimeError(f"Missing access token for plaid_item_pk={plaid_item_pk} label={label}")
-    response = to_plain(client.accounts_balance_get({"access_token": access_token})) or {}
+    response = to_plain(client.accounts_get({"access_token": access_token})) or {}
     accounts = response.get("accounts", []) or []
     for account_obj in accounts:
         account = to_plain(account_obj) or {}

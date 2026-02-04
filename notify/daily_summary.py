@@ -6,23 +6,25 @@ from config import TIMEZONE
 from db.db import db_conn
 from notify.queries import (
     RUN_META,
+    BALANCES_WITH_PREV_FOR_RUN,
     TODAY_TOTALS_FOR_RUN,
-    WTD_TOTALS,
-    MTD_TOTALS,
-    YTD_TOTALS,
+    TODAY_TOTALS_WITH_PREV_FOR_RUN,
+    WTD_TOTALS_WITH_PREV,
+    MTD_TOTALS_WITH_PREV,
+    YTD_TOTALS_WITH_PREV,
     POSTED_TRANSACTIONS_FOR_RUN,
-    BALANCES_WITH_PREV_FOR_RUN
+    CLASSIFICATION_SOURCE_BREAKDOWN_FOR_RUN,
 )
 
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
 
 
-def to_decimal(value):
-    if value is None:
+def to_decimal(v):
+    if v is None:
         return Decimal("0")
-    if isinstance(value, Decimal):
-        return value
-    return Decimal(str(value))
+    if isinstance(v, Decimal):
+        return v
+    return Decimal(str(v))
 
 
 def fetch_one(conn, sql, params=None):
@@ -31,7 +33,7 @@ def fetch_one(conn, sql, params=None):
         row = cur.fetchone()
         if row is None:
             return {}
-        cols = [desc[0] for desc in cur.description]
+        cols = [d[0] for d in cur.description]
         return dict(zip(cols, row))
 
 
@@ -39,8 +41,67 @@ def fetch_all(conn, sql, params=None):
     with conn.cursor() as cur:
         cur.execute(sql, params or ())
         rows = cur.fetchall()
-        cols = [desc[0] for desc in cur.description]
+        cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in rows]
+
+
+def normalize_pct(v):
+    if v is None:
+        return None
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
+
+def normalize_totals_row(row):
+    if not row:
+        return {}
+    out = dict(row)
+    money_fields = [
+        "true_spend",
+        "true_spend_prev",
+        "true_spend_delta",
+        "necessity_spend",
+        "necessity_spend_prev",
+        "necessity_spend_delta",
+        "discretionary_spend",
+        "discretionary_spend_prev",
+        "discretionary_spend_delta",
+        "true_income",
+        "true_income_prev",
+        "true_income_delta",
+        "reimbursements",
+        "reimbursements_prev",
+        "reimbursements_delta",
+        "savings",
+        "savings_prev",
+        "savings_delta",
+        "transfers_out",
+        "transfers_in",
+        "invest_out",
+        "invest_in",
+        "fees_out",
+        "ignored_abs",
+    ]
+    pct_fields = [
+        "true_spend_pct_change_abs",
+        "necessity_spend_pct_change_abs",
+        "discretionary_spend_pct_change_abs",
+        "true_income_pct_change_abs",
+        "reimbursements_pct_change_abs",
+        "savings_pct_change_abs",
+        "savings_rate",
+        "savings_rate_prev",
+        "savings_rate_delta",
+    ]
+    for k in money_fields:
+        if k in out:
+            out[k] = to_decimal(out.get(k))
+    for k in pct_fields:
+        if k in out:
+            out[k] = normalize_pct(out.get(k))
+    return out
 
 
 def build_daily_summary_data(run_id, include_transactions=True):
@@ -48,26 +109,24 @@ def build_daily_summary_data(run_id, include_transactions=True):
     generated_label = now_local.strftime("%Y-%m-%d %H:%M %Z")
     with db_conn() as conn:
         meta = fetch_one(conn, RUN_META, (run_id,))
+        balances = fetch_all(conn, BALANCES_WITH_PREV_FOR_RUN, (run_id,))
         today = fetch_one(conn, TODAY_TOTALS_FOR_RUN, (run_id,))
-        wtd = fetch_one(conn, WTD_TOTALS)
-        mtd = fetch_one(conn, MTD_TOTALS)
-        ytd = fetch_one(conn, YTD_TOTALS)
-        net = fetch_one(conn, NET_WORTH_FOR_RUN, (run_id,))
-        balances = fetch_all(conn, BALANCES_FOR_RUN, (run_id,))
+        today_with_prev = fetch_one(conn, TODAY_TOTALS_WITH_PREV_FOR_RUN, (run_id,))
+        wtd_with_prev = fetch_one(conn, WTD_TOTALS_WITH_PREV)
+        mtd_with_prev = fetch_one(conn, MTD_TOTALS_WITH_PREV)
+        ytd_with_prev = fetch_one(conn, YTD_TOTALS_WITH_PREV)
+        source_breakdown = fetch_all(conn, CLASSIFICATION_SOURCE_BREAKDOWN_FOR_RUN, (run_id,))
         txs = fetch_all(conn, POSTED_TRANSACTIONS_FOR_RUN, (run_id,)) if include_transactions else []
     return {
         "run_id": run_id,
         "generated_label": generated_label,
         "run_status": meta.get("status"),
-        "today_spent": to_decimal(today.get("today_spent")),
-        "today_received": to_decimal(today.get("today_received")),
-        "wtd_spent": to_decimal(wtd.get("wtd_spent")),
-        "wtd_received": to_decimal(wtd.get("wtd_received")),
-        "mtd_spent": to_decimal(mtd.get("mtd_spent")),
-        "mtd_received": to_decimal(mtd.get("mtd_received")),
-        "ytd_spent": to_decimal(ytd.get("ytd_spent")),
-        "ytd_received": to_decimal(ytd.get("ytd_received")),
-        "net_worth": to_decimal(net.get("net_worth")),
         "balances": balances,
+        "today": normalize_totals_row(today),
+        "today_with_prev": normalize_totals_row(today_with_prev),
+        "wtd_with_prev": normalize_totals_row(wtd_with_prev),
+        "mtd_with_prev": normalize_totals_row(mtd_with_prev),
+        "ytd_with_prev": normalize_totals_row(ytd_with_prev),
+        "classification_source_breakdown": source_breakdown,
         "transactions": txs,
     }

@@ -23,11 +23,24 @@ def money_plain(x):
     return f"{v:,.2f}"
 
 
-def net_plain(x):
+def signed_money_plain(x):
     v = to_decimal(x).quantize(Decimal("0.01"))
     if v > 0:
         return f"+{v:,.2f}"
     return f"{v:,.2f}"
+
+
+def pct_plain(x):
+    if x is None:
+        return ""
+    try:
+        v = Decimal(str(x)) * Decimal("100")
+        v = v.quantize(Decimal("0.01"))
+        if v > 0:
+            return f"+{v}%"
+        return f"{v}%"
+    except Exception:
+        return ""
 
 
 def truncate(s, n):
@@ -70,25 +83,40 @@ def make_table(data, col_widths, numeric_cols=None):
     return t
 
 
-def make_balances_table(rows):
-    data = [["account", "type", "subtype", "balance"]]
+def make_balances_with_prev_table(rows):
+    data = [["account", "type", "subtype", "current", "prev", "delta", "pct"]]
     for r in rows:
-        row_type = r.get("row_type")
+        row_type = (r.get("row_type") or "").lower()
         name = r.get("account_name")
         if row_type == "total":
             name = "net_worth"
+        cur = r.get("current_signed") if "current_signed" in r else r.get("signed_current")
+        prev = r.get("prior_signed") if "prior_signed" in r else r.get("signed_prior")
+        delta = r.get("delta_signed") if "delta_signed" in r else r.get("signed_delta")
+        pct = r.get("pct_change_abs") if "pct_change_abs" in r else r.get("signed_pct_change_abs")
         data.append(
             [
-                truncate(name, 28),
-                truncate(r.get("account_type"), 10),
-                truncate(r.get("account_subtype"), 12),
-                net_plain(r.get("signed_current")),
+                truncate(name, 22),
+                truncate(r.get("account_type"), 8),
+                truncate(r.get("account_subtype"), 10),
+                signed_money_plain(cur),
+                signed_money_plain(prev),
+                signed_money_plain(delta),
+                pct_plain(pct),
             ]
         )
     t = make_table(
         data,
-        col_widths=[2.65 * inch, 1.05 * inch, 1.25 * inch, 1.20 * inch],
-        numeric_cols={3},
+        col_widths=[
+            2.05 * inch,
+            0.90 * inch,
+            1.05 * inch,
+            0.95 * inch,
+            0.95 * inch,
+            0.95 * inch,
+            0.70 * inch,
+        ],
+        numeric_cols={3, 4, 5, 6},
     )
     total_row_idx = None
     for i in range(1, len(rows) + 1):
@@ -107,22 +135,82 @@ def make_balances_table(rows):
     return t
 
 
+def pick_keys_for_totals(row):
+    if not row:
+        return None
+    if "true_spend" in row or "true_spend_prev" in row:
+        return {
+            "spend": ("true_spend", "true_spend_prev", "true_spend_delta", "true_spend_pct_change_abs"),
+            "income": ("true_income", "true_income_prev", "true_income_delta", "true_income_pct_change_abs"),
+            "savings": ("savings", "savings_prev", "savings_delta", "savings_pct_change_abs"),
+        }
+    return None
+
+
+def make_period_totals_table(label, row):
+    keys = pick_keys_for_totals(row)
+    if not keys:
+        data = [["metric", "current", "prev", "delta", "pct"], ["(no data)", "", "", "", ""]]
+        return make_table(
+            data,
+            col_widths=[1.65 * inch, 1.15 * inch, 1.15 * inch, 1.05 * inch, 0.70 * inch],
+            numeric_cols={1, 2, 3, 4},
+        )
+
+    data = [["metric", "current", "prev", "delta", "pct"]]
+    for metric_name in ["spend", "income", "savings"]:
+        cur_k, prev_k, delta_k, pct_k = keys[metric_name]
+        cur_v = row.get(cur_k)
+        prev_v = row.get(prev_k)
+        delta_v = row.get(delta_k)
+        pct_v = row.get(pct_k)
+        data.append(
+            [
+                f"{label}_{metric_name}",
+                money_plain(cur_v),
+                money_plain(prev_v),
+                signed_money_plain(delta_v),
+                pct_plain(pct_v),
+            ]
+        )
+
+    return make_table(
+        data,
+        col_widths=[1.65 * inch, 1.15 * inch, 1.15 * inch, 1.05 * inch, 0.70 * inch],
+        numeric_cols={1, 2, 3, 4},
+    )
+
+
+def make_source_coverage_table(rows):
+    data = [["classification", "source", "tx_count", "abs_amount", "pct"]]
+    for r in rows or []:
+        data.append(
+            [
+                truncate(r.get("classification"), 14),
+                truncate(r.get("classification_source"), 12),
+                str(r.get("tx_count") or ""),
+                money_plain(r.get("abs_amount_sum") or 0),
+                pct_plain(r.get("pct_of_class_abs_amount")),
+            ]
+        )
+    if len(data) == 1:
+        data.append(["(none)", "", "", "", ""])
+    return make_table(
+        data,
+        col_widths=[1.40 * inch, 1.25 * inch, 0.85 * inch, 1.10 * inch, 0.65 * inch],
+        numeric_cols={2, 3, 4},
+    )
+
+
 def build_daily_summary_pdf(run_id):
     d = build_daily_summary_data(run_id)
-    today_spent = to_decimal(d.get("today_spent"))
-    today_received = to_decimal(d.get("today_received"))
-    today_net = today_received - today_spent
-    wtd_spent = to_decimal(d.get("wtd_spent"))
-    wtd_received = to_decimal(d.get("wtd_received"))
-    wtd_net = wtd_received - wtd_spent
-    mtd_spent = to_decimal(d.get("mtd_spent"))
-    mtd_received = to_decimal(d.get("mtd_received"))
-    mtd_net = mtd_received - mtd_spent
-    ytd_spent = to_decimal(d.get("ytd_spent"))
-    ytd_received = to_decimal(d.get("ytd_received"))
-    ytd_net = ytd_received - ytd_spent
     balances = d.get("balances") or []
     txs = d.get("transactions") or []
+    today_with_prev = d.get("today_with_prev") or {}
+    wtd_with_prev = d.get("wtd_with_prev") or {}
+    mtd_with_prev = d.get("mtd_with_prev") or {}
+    ytd_with_prev = d.get("ytd_with_prev") or {}
+    source_breakdown = d.get("classification_source_breakdown") or []
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -154,53 +242,33 @@ def build_daily_summary_pdf(run_id):
     story.append(Paragraph(f"run_status: {d.get('run_status')}", mono))
     story.append(Paragraph(f"generated: {d.get('generated_label')}", mono))
     story.append(Spacer(1, 12))
-    story.append(Paragraph("today_delta", mono_bold))
+    story.append(Paragraph("true_totals_with_prev", mono_bold))
     story.append(Spacer(1, 4))
-    today_tbl = [
-        ["spent", "received", "net"],
-        [money_plain(today_spent), money_plain(today_received), net_plain(today_net)],
-    ]
-    story.append(
-        KeepTogether(
-            make_table(
-                today_tbl,
-                col_widths=[1.45 * inch, 1.45 * inch, 1.45 * inch],
-                numeric_cols={0, 1, 2},
-            )
-        )
-    )
+    story.append(KeepTogether(make_period_totals_table("today", today_with_prev)))
+    story.append(Spacer(1, 8))
+    story.append(KeepTogether(make_period_totals_table("wtd", wtd_with_prev)))
+    story.append(Spacer(1, 8))
+    story.append(KeepTogether(make_period_totals_table("mtd", mtd_with_prev)))
+    story.append(Spacer(1, 8))
+    story.append(KeepTogether(make_period_totals_table("ytd", ytd_with_prev)))
     story.append(Spacer(1, 14))
-    story.append(Paragraph("rollups", mono_bold))
-    story.append(Spacer(1, 4))
-    roll_tbl = [
-        ["period", "spent", "received", "net"],
-        ["week_to_date", money_plain(wtd_spent), money_plain(wtd_received), net_plain(wtd_net)],
-        ["month_to_date", money_plain(mtd_spent), money_plain(mtd_received), net_plain(mtd_net)],
-        ["year_to_date", money_plain(ytd_spent), money_plain(ytd_received), net_plain(ytd_net)],
-    ]
-    story.append(
-        KeepTogether(
-            make_table(
-                roll_tbl,
-                col_widths=[1.85 * inch, 1.25 * inch, 1.25 * inch, 1.25 * inch],
-                numeric_cols={1, 2, 3},
-            )
-        )
-    )
-    story.append(Spacer(1, 14))
-    story.append(Paragraph("account_balances", mono_bold))
+    story.append(Paragraph("account_balances_with_prev", mono_bold))
     story.append(Spacer(1, 4))
     if not balances:
         story.append(Paragraph("No balances for this run.", mono))
     else:
-        story.append(KeepTogether(make_balances_table(balances)))
+        story.append(KeepTogether(make_balances_with_prev_table(balances)))
+    story.append(Spacer(1, 14))
+    story.append(Paragraph("classification_source_coverage", mono_bold))
+    story.append(Spacer(1, 4))
+    story.append(KeepTogether(make_source_coverage_table(source_breakdown)))
     story.append(Spacer(1, 14))
     story.append(Paragraph("transactions_delta", mono_bold))
     story.append(Spacer(1, 4))
     if not txs:
         story.append(Paragraph("No posted transactions for this run.", mono))
     else:
-        tx_tbl = [["date", "item", "account", "name", "spent", "received", "net"]]
+        tx_tbl = [["date", "item", "account", "name", "spent", "received", "net", "class", "axis", "src"]]
         for tx in txs:
             amt = to_decimal(tx.get("amount"))
             spent = amt if amt > 0 else Decimal("0")
@@ -209,25 +277,31 @@ def build_daily_summary_pdf(run_id):
             tx_tbl.append(
                 [
                     truncate(tx.get("date"), 10),
-                    truncate(tx.get("item_label"), 10),
-                    truncate(tx.get("account_name"), 14),
-                    truncate(tx.get("merchant_name") or tx.get("name"), 24),
+                    truncate(tx.get("item_label"), 8),
+                    truncate(tx.get("account_name"), 12),
+                    truncate(tx.get("effective_merchant") or tx.get("merchant_name") or tx.get("name"), 20),
                     money_plain(spent) if spent else "",
                     money_plain(received) if received else "",
-                    net_plain(net),
+                    signed_money_plain(net),
+                    truncate(tx.get("classification"), 8),
+                    truncate(tx.get("behavior_axis"), 10),
+                    truncate(tx.get("classification_source"), 10),
                 ]
             )
         story.append(
             make_table(
                 tx_tbl,
                 col_widths=[
+                    0.70 * inch,
+                    0.70 * inch,
+                    1.00 * inch,
+                    1.80 * inch,
+                    0.70 * inch,
+                    0.70 * inch,
+                    0.70 * inch,
+                    0.65 * inch,
                     0.75 * inch,
-                    0.95 * inch,
-                    1.20 * inch,
-                    2.15 * inch,
-                    0.75 * inch,
-                    0.75 * inch,
-                    0.75 * inch,
+                    0.65 * inch,
                 ],
                 numeric_cols={4, 5, 6},
             )

@@ -17,6 +17,7 @@ TABLES = {
     "hosted_link_sessions": os.getenv("HOSTED_LINK_SESSIONS_TABLE", "hosted_link_sessions"),
     "plaid_webhook_events": os.getenv("PLAID_WEBHOOK_EVENTS_TABLE", "plaid_webhook_events"),
     "merchant_rules": os.getenv("MERCHANT_RULES_TABLE", "merchant_rules"),
+    "manual_balances": os.getenv("MANUAL_BALANCES_TABLE", "manual_balances"),
 }
 
 def table(name):

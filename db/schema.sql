@@ -185,6 +185,17 @@ create table if not exists ${MERCHANT_RULES_TABLE} (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists ${MANUAL_BALANCES_TABLE} (
+  id bigserial primary key,
+  env text not null default 'sandbox',
+  key text not null,
+  label text not null,
+  signed_balance numeric not null,
+  note text,
+  updated_at timestamptz not null default now(),
+  constraint manual_balances_unique_env_key unique (env, key)
+);
+
 alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${TRANSACTIONS_TABLE} enable row level security;
@@ -195,6 +206,7 @@ alter table ${NOTIFICATIONS_TABLE} enable row level security;
 alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
 alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
 alter table ${MERCHANT_RULES_TABLE} enable row level security;
+alter table ${MANUAL_BALANCES_TABLE} enable row level security;
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
@@ -240,4 +252,8 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${MERCHANT_RULES_TABLE};
 create policy service_role_all on ${MERCHANT_RULES_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${MANUAL_BALANCES_TABLE};
+create policy service_role_all on ${MANUAL_BALANCES_TABLE}
 for all to service_role using (true) with check (true);

@@ -6,8 +6,26 @@ ACCOUNTS_TABLE = TABLES["accounts"]
 BALANCE_SNAPSHOTS_TABLE = TABLES["balance_snapshots"]
 TRANSACTIONS_TABLE = TABLES["transactions"]
 MERCHANT_RULES_TABLE = TABLES["merchant_rules"]
+MANUAL_BALANCES_TABLE = TABLES["manual_balances"]
 
 SQL_TZ = TIMEZONE or "America/New_York"
+
+
+UPDATE_MANUAL_BALANCES_TABLE = f"""insert into
+manual_balances (env, key, label, signed_balance, note, updated_at)
+values (
+  'production',
+  'discover_savings',
+  'Discover Savings (manual)',
+  12345.67,
+  'manual balance override',
+  now()
+)
+on conflict (env, key) do update set
+  signed_balance = excluded.signed_balance,
+  label = excluded.label,
+  note = excluded.note,
+  updated_at = now();"""
 
 
 RUN_META = f"""
@@ -27,12 +45,12 @@ where id = %s;
 BALANCES_WITH_PREV_FOR_RUN = f"""
 with current_run as (
   select id, env
-  from runs
+  from {RUNS_TABLE}
   where id = %s
 ),
 prior_run as (
   select r.id as prior_run_id
-  from runs r
+  from {RUNS_TABLE} r
   join current_run cr on cr.env = r.env
   where r.run_type = 'daily_sync'
     and r.status = 'success'
@@ -50,8 +68,8 @@ current_per_account as (
       when a.type in ('credit', 'loan') then -abs(coalesce(bs.current, 0))
       else coalesce(bs.current, 0)
     end as current_signed
-  from balance_snapshots bs
-  join accounts a
+  from {BALANCE_SNAPSHOTS_TABLE} bs
+  join {ACCOUNTS_TABLE} a
     on a.id = bs.account_pk
   join current_run cr
     on true
@@ -66,8 +84,8 @@ prior_per_account as (
       when a.type in ('credit', 'loan') then -abs(coalesce(bs.current, 0))
       else coalesce(bs.current, 0)
     end as prior_signed
-  from balance_snapshots bs
-  join accounts a
+  from {BALANCE_SNAPSHOTS_TABLE} bs
+  join {ACCOUNTS_TABLE} a
     on a.id = bs.account_pk
   join prior_run pr
     on pr.prior_run_id = bs.run_id
@@ -139,177 +157,478 @@ order by
 """
 
 
+CLASSIFIED_TX_FOR_ENV_CTE = f"""
+tx_base as (
+  select
+    t.id as tx_pk,
+    t.transaction_id,
+    t.account_pk,
+    t.amount,
+    t.date,
+    t.name,
+    t.merchant_name,
+    t.pending,
+    t.removed,
+    t.first_seen_run_id,
+    t.last_seen_run_id,
+    t.personal_finance_category,
+    coalesce(nullif(t.merchant_name, ''), nullif(t.name, '')) as effective_merchant
+  from {TRANSACTIONS_TABLE} t
+),
+env_scoped as (
+  select
+    b.*,
+    a.account_id,
+    a.name as account_name,
+    a.type as account_type,
+    a.subtype as account_subtype,
+    pi.env as item_env,
+    pi.label as item_label
+  from tx_base b
+  join {ACCOUNTS_TABLE} a
+    on a.id = b.account_pk
+  join {PLAID_ITEMS_TABLE} pi
+    on pi.id = a.plaid_item_pk
+  where a.include_in_app = true
+    and a.active = true
+    and b.removed = false
+    and coalesce(b.pending, false) = false
+),
+matching_rules as (
+  select
+    e.tx_pk,
+    r.id as rule_id,
+    r.classification as rule_classification,
+    r.behavior_axis as rule_behavior_axis,
+    r.category as rule_category,
+    r.priority
+  from env_scoped e
+  join {MERCHANT_RULES_TABLE} r
+    on r.env = e.item_env
+   and r.active = true
+   and e.effective_merchant is not null
+   and (
+     (r.match_type = 'ilike' and e.effective_merchant ilike ('%' || r.pattern || '%'))
+     or
+     (r.match_type = 'contains' and position(r.pattern in e.effective_merchant) > 0)
+     or
+     (r.match_type = 'regex' and e.effective_merchant ~* r.pattern)
+   )
+),
+ranked_rules as (
+  select
+    m.*,
+    row_number() over (
+      partition by m.tx_pk
+      order by m.priority asc, m.rule_id asc
+    ) as rn
+  from matching_rules m
+),
+best_rule as (
+  select
+    tx_pk,
+    rule_id as matched_rule_id,
+    rule_classification,
+    rule_behavior_axis,
+    rule_category
+  from ranked_rules
+  where rn = 1
+),
+pfc as (
+  select
+    e.tx_pk,
+    lower(coalesce(e.personal_finance_category->>'primary', '')) as pfc_primary
+  from env_scoped e
+),
+pfc_mapped as (
+  select
+    p.tx_pk,
+    case
+      when p.pfc_primary in ('INCOME', 'PAYROLL', 'BONUS', 'BENEFITS') then 'income'
+      when p.pfc_primary in ('TRANSFER_IN', 'TRANSFER_OUT') then 'transfer'
+      when p.pfc_primary in ('INVESTMENT', 'INVESTMENT_INCOME', 'SECURITIES_TRADES') then 'invest'
+      when p.pfc_primary in ('BANK_FEES', 'OVERDRAFT', 'INTEREST_CHARGED', 'LATE_FEE') then 'fee'
+      when p.pfc_primary = '' then 'unknown'
+      else 'expense'
+    end as mapped_classification,
+    case
+      when p.pfc_primary in (
+        'GROCERIES',
+        'TRANSPORTATION',
+        'GAS',
+        'PUBLIC_TRANSIT',
+        'HEALTHCARE',
+        'MEDICAL',
+        'PHARMACY',
+        'INSURANCE',
+        'UTILITIES',
+        'RENT',
+        'MORTGAGE',
+        'PHONE',
+        'INTERNET',
+        'CHILDCARE',
+        'EDUCATION',
+        'TAXES'
+      ) then 'necessity'
+      when p.pfc_primary = '' then null
+      else 'discretionary'
+    end as mapped_behavior_axis,
+    nullif(p.pfc_primary, '') as mapped_category
+  from pfc p
+),
+classified_tx as (
+  select
+    e.tx_pk,
+    e.transaction_id,
+    e.account_pk,
+    e.account_id,
+    e.account_name,
+    e.account_type,
+    e.account_subtype,
+    e.item_env as env,
+    e.item_label,
+    e.amount,
+    e.date,
+    e.name,
+    e.merchant_name,
+    e.effective_merchant,
+    e.first_seen_run_id,
+    e.last_seen_run_id,
+    br.matched_rule_id,
+    coalesce(br.rule_classification, pm.mapped_classification, 'unknown') as classification,
+    case
+      when coalesce(br.rule_classification, pm.mapped_classification, 'unknown') = 'expense'
+        then coalesce(br.rule_behavior_axis, pm.mapped_behavior_axis, 'discretionary')
+      else null
+    end as behavior_axis,
+    coalesce(br.rule_category, pm.mapped_category) as category,
+    case
+      when br.matched_rule_id is not null then 'rule'
+      when pm.mapped_classification is not null then 'pfc_fallback'
+      else 'unknown'
+    end as classification_source
+  from env_scoped e
+  left join best_rule br
+    on br.tx_pk = e.tx_pk
+  left join pfc_mapped pm
+    on pm.tx_pk = e.tx_pk
+)
+"""
+
+
+TOTALS_AGG_SELECT = """
+  coalesce(sum(x.amount) filter (where x.classification = 'expense' and x.amount > 0), 0) as true_spend,
+  coalesce(sum(x.amount) filter (where x.classification = 'expense' and x.amount > 0 and x.behavior_axis = 'necessity'), 0) as necessity_spend,
+  coalesce(sum(x.amount) filter (where x.classification = 'expense' and x.amount > 0 and x.behavior_axis = 'discretionary'), 0) as discretionary_spend,
+
+  coalesce(sum(-x.amount) filter (where x.classification = 'income' and x.amount < 0), 0) as true_income,
+  coalesce(sum(-x.amount) filter (where x.classification = 'cash_in_non_income' and x.amount < 0), 0) as reimbursements,
+
+  (coalesce(sum(-x.amount) filter (where x.classification = 'income' and x.amount < 0), 0)
+   - coalesce(sum(x.amount) filter (where x.classification = 'expense' and x.amount > 0), 0)) as savings,
+
+  case
+    when coalesce(sum(-x.amount) filter (where x.classification = 'income' and x.amount < 0), 0) = 0 then null
+    else
+      (coalesce(sum(-x.amount) filter (where x.classification = 'income' and x.amount < 0), 0)
+       - coalesce(sum(x.amount) filter (where x.classification = 'expense' and x.amount > 0), 0))
+      /
+      coalesce(sum(-x.amount) filter (where x.classification = 'income' and x.amount < 0), 0)
+  end as savings_rate,
+
+  coalesce(sum(x.amount) filter (where x.classification = 'transfer' and x.amount > 0), 0) as transfers_out,
+  coalesce(sum(-x.amount) filter (where x.classification = 'transfer' and x.amount < 0), 0) as transfers_in,
+
+  coalesce(sum(x.amount) filter (where x.classification = 'invest' and x.amount > 0), 0) as invest_out,
+  coalesce(sum(-x.amount) filter (where x.classification = 'invest' and x.amount < 0), 0) as invest_in,
+
+  coalesce(sum(x.amount) filter (where x.classification = 'fee' and x.amount > 0), 0) as fees_out,
+  coalesce(sum(abs(x.amount)) filter (where x.classification = 'ignore'), 0) as ignored_abs
+"""
+
+
+TOTALS_DELTA_SELECT = """
+  cur.true_spend,
+  prev.true_spend as true_spend_prev,
+  (cur.true_spend - prev.true_spend) as true_spend_delta,
+  case when prev.true_spend = 0 then null else (cur.true_spend - prev.true_spend) / abs(prev.true_spend) end as true_spend_pct_change_abs,
+
+  cur.necessity_spend,
+  prev.necessity_spend as necessity_spend_prev,
+  (cur.necessity_spend - prev.necessity_spend) as necessity_spend_delta,
+  case when prev.necessity_spend = 0 then null else (cur.necessity_spend - prev.necessity_spend) / abs(prev.necessity_spend) end as necessity_spend_pct_change_abs,
+
+  cur.discretionary_spend,
+  prev.discretionary_spend as discretionary_spend_prev,
+  (cur.discretionary_spend - prev.discretionary_spend) as discretionary_spend_delta,
+  case when prev.discretionary_spend = 0 then null else (cur.discretionary_spend - prev.discretionary_spend) / abs(prev.discretionary_spend) end as discretionary_spend_pct_change_abs,
+
+  cur.true_income,
+  prev.true_income as true_income_prev,
+  (cur.true_income - prev.true_income) as true_income_delta,
+  case when prev.true_income = 0 then null else (cur.true_income - prev.true_income) / abs(prev.true_income) end as true_income_pct_change_abs,
+
+  cur.reimbursements,
+  prev.reimbursements as reimbursements_prev,
+  (cur.reimbursements - prev.reimbursements) as reimbursements_delta,
+  case when prev.reimbursements = 0 then null else (cur.reimbursements - prev.reimbursements) / abs(prev.reimbursements) end as reimbursements_pct_change_abs,
+
+  cur.savings,
+  prev.savings as savings_prev,
+  (cur.savings - prev.savings) as savings_delta,
+  case when prev.savings = 0 then null else (cur.savings - prev.savings) / abs(prev.savings) end as savings_pct_change_abs,
+
+  cur.savings_rate,
+  prev.savings_rate as savings_rate_prev,
+  (cur.savings_rate - prev.savings_rate) as savings_rate_delta
+"""
+
+
 TODAY_TOTALS_FOR_RUN = f"""
+with
+{CLASSIFIED_TX_FOR_ENV_CTE}
 select
-  coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as today_spent,
-  coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as today_received
-from {TRANSACTIONS_TABLE} t
-join {ACCOUNTS_TABLE} a
-  on a.id = t.account_pk
-where a.include_in_app = true
-  and a.active = true
-  and t.removed = false
-  and coalesce(t.pending, false) = false
-  and t.last_seen_run_id = %s;
+  {TOTALS_AGG_SELECT}
+from classified_tx x
+where x.last_seen_run_id = %s;
+"""
+
+
+TODAY_TOTALS_WITH_PREV_FOR_RUN = f"""
+with current_run as (
+  select id, env
+  from {RUNS_TABLE}
+  where id = %s
+),
+prior_run as (
+  select r.id as prior_run_id
+  from {RUNS_TABLE} r
+  join current_run cr on cr.env = r.env
+  where r.run_type = 'daily_sync'
+    and r.status = 'success'
+    and r.id < cr.id
+  order by r.id desc
+  limit 1
+),
+{CLASSIFIED_TX_FOR_ENV_CTE}
+scoped as (
+  select 'current' as scope, x.*
+  from classified_tx x
+  join current_run cr on true
+  where x.last_seen_run_id = cr.id
+
+  union all
+
+  select 'prior' as scope, x.*
+  from classified_tx x
+  join prior_run pr on true
+  where x.last_seen_run_id = pr.prior_run_id
+),
+agg as (
+  select
+    scope,
+    {TOTALS_AGG_SELECT}
+  from scoped x
+  group by scope
+),
+cur as (select * from agg where scope = 'current'),
+prev as (select * from agg where scope = 'prior')
+select
+  {TOTALS_DELTA_SELECT}
+from cur
+cross join prev;
+"""
+
+
+WTD_TOTALS_WITH_PREV = f"""
+with bounds as (
+  select
+    date_trunc('week', (now() at time zone '{SQL_TZ}'))::date as cur_start,
+    (now() at time zone '{SQL_TZ}')::date as cur_end
+),
+prev_bounds as (
+  select
+    (b.cur_start - interval '7 days')::date as prev_start,
+    (b.cur_end - interval '7 days')::date as prev_end
+  from bounds b
+),
+{CLASSIFIED_TX_FOR_ENV_CTE}
+scoped as (
+  select 'current' as scope, x.*
+  from classified_tx x
+  join bounds b on true
+  where x.date >= b.cur_start
+    and x.date <= b.cur_end
+
+  union all
+
+  select 'prior' as scope, x.*
+  from classified_tx x
+  join prev_bounds p on true
+  where x.date >= p.prev_start
+    and x.date <= p.prev_end
+),
+agg as (
+  select
+    scope,
+    {TOTALS_AGG_SELECT}
+  from scoped x
+  group by scope
+),
+cur as (select * from agg where scope = 'current'),
+prev as (select * from agg where scope = 'prior')
+select
+  {TOTALS_DELTA_SELECT}
+from cur
+cross join prev;
+"""
+
+
+MTD_TOTALS_WITH_PREV = f"""
+with bounds as (
+  select
+    date_trunc('month', (now() at time zone '{SQL_TZ}'))::date as cur_start,
+    (now() at time zone '{SQL_TZ}')::date as cur_end
+),
+prev_bounds as (
+  select
+    (b.cur_start - interval '1 month')::date as prev_start,
+    least(
+      (b.cur_start - interval '1 month')::date + (b.cur_end - b.cur_start),
+      (b.cur_start - interval '1 day')::date
+    ) as prev_end
+  from bounds b
+),
+{CLASSIFIED_TX_FOR_ENV_CTE}
+scoped as (
+  select 'current' as scope, x.*
+  from classified_tx x
+  join bounds b on true
+  where x.date >= b.cur_start
+    and x.date <= b.cur_end
+
+  union all
+
+  select 'prior' as scope, x.*
+  from classified_tx x
+  join prev_bounds p on true
+  where x.date >= p.prev_start
+    and x.date <= p.prev_end
+),
+agg as (
+  select
+    scope,
+    {TOTALS_AGG_SELECT}
+  from scoped x
+  group by scope
+),
+cur as (select * from agg where scope = 'current'),
+prev as (select * from agg where scope = 'prior')
+select
+  {TOTALS_DELTA_SELECT}
+from cur
+cross join prev;
+"""
+
+
+YTD_TOTALS_WITH_PREV = f"""
+with bounds as (
+  select
+    date_trunc('year', (now() at time zone '{SQL_TZ}'))::date as cur_start,
+    (now() at time zone '{SQL_TZ}')::date as cur_end
+),
+prev_bounds as (
+  select
+    (b.cur_start - interval '1 year')::date as prev_start,
+    least(
+      (b.cur_start - interval '1 year')::date + (b.cur_end - b.cur_start),
+      (b.cur_start - interval '1 day')::date
+    ) as prev_end
+  from bounds b
+),
+{CLASSIFIED_TX_FOR_ENV_CTE}
+scoped as (
+  select 'current' as scope, x.*
+  from classified_tx x
+  join bounds b on true
+  where x.date >= b.cur_start
+    and x.date <= b.cur_end
+
+  union all
+
+  select 'prior' as scope, x.*
+  from classified_tx x
+  join prev_bounds p on true
+  where x.date >= p.prev_start
+    and x.date <= p.prev_end
+),
+agg as (
+  select
+    scope,
+    {TOTALS_AGG_SELECT}
+  from scoped x
+  group by scope
+),
+cur as (select * from agg where scope = 'current'),
+prev as (select * from agg where scope = 'prior')
+select
+  {TOTALS_DELTA_SELECT}
+from cur
+cross join prev;
 """
 
 
 POSTED_TRANSACTIONS_FOR_RUN = f"""
-with classified_transactions as (
-  with tx_base as (
-    select
-      t.id as tx_pk,
-      t.transaction_id,
-      t.account_pk,
-      t.amount,
-      t.date,
-      t.name,
-      t.merchant_name,
-      t.pending,
-      t.removed,
-      t.first_seen_run_id,
-      t.last_seen_run_id,
-      coalesce(nullif(t.merchant_name, ''), nullif(t.name, '')) as effective_merchant
-    from {TRANSACTIONS_TABLE} t
-  ),
-  matching_rules as (
-    select
-      b.tx_pk,
-      r.id as rule_id,
-      r.classification,
-      r.behavior_axis,
-      r.category,
-      r.priority
-    from tx_base b
-    join {ACCOUNTS_TABLE} a
-      on a.id = b.account_pk
-    join {PLAID_ITEMS_TABLE} pi
-      on pi.id = a.plaid_item_pk
-    join {MERCHANT_RULES_TABLE} r
-      on r.env = pi.env
-     and r.active = true
-     and b.effective_merchant is not null
-     and (
-       (r.match_type = 'ilike'
-        and b.effective_merchant ilike ('%' || r.pattern || '%'))
-       or
-       (r.match_type = 'contains'
-        and position(r.pattern in b.effective_merchant) > 0)
-       or
-       (r.match_type = 'regex'
-        and b.effective_merchant ~* r.pattern)
-     )
-  ),
-  ranked_rules as (
-    select
-      m.*,
-      row_number() over (
-        partition by m.tx_pk
-        order by m.priority asc, m.rule_id asc
-      ) as rn
-    from matching_rules m
-  ),
-  best_rule as (
-    select
-      tx_pk,
-      rule_id as matched_rule_id,
-      classification,
-      behavior_axis,
-      category
-    from ranked_rules
-    where rn = 1
-  )
+with
+{CLASSIFIED_TX_FOR_ENV_CTE}
+select
+  x.date,
+  x.name,
+  x.merchant_name,
+  x.effective_merchant,
+  x.amount,
+  x.account_id,
+  x.account_name,
+  x.item_label,
+  x.classification,
+  x.behavior_axis,
+  x.category,
+  x.matched_rule_id,
+  x.classification_source
+from classified_tx x
+where x.last_seen_run_id = %s
+order by x.date desc, x.amount desc;
+"""
+
+
+CLASSIFICATION_SOURCE_BREAKDOWN_FOR_RUN = f"""
+with
+{CLASSIFIED_TX_FOR_ENV_CTE}
+base as (
   select
-    b.tx_pk,
-    b.transaction_id,
-    b.account_pk,
-    b.amount,
-    b.date,
-    b.name,
-    b.merchant_name,
-    b.effective_merchant,
-    b.pending,
-    b.removed,
-    b.first_seen_run_id,
-    b.last_seen_run_id,
-    br.matched_rule_id,
-    br.classification,
-    br.behavior_axis,
-    br.category
-  from tx_base b
-  left join best_rule br
-    on br.tx_pk = b.tx_pk
+    x.classification,
+    x.classification_source,
+    count(*) as tx_count,
+    coalesce(sum(abs(x.amount)), 0) as abs_amount_sum
+  from classified_tx x
+  where x.last_seen_run_id = %s
+  group by x.classification, x.classification_source
+),
+with_pct as (
+  select
+    b.*,
+    case
+      when sum(b.abs_amount_sum) over (partition by b.classification) = 0 then null
+      else b.abs_amount_sum / sum(b.abs_amount_sum) over (partition by b.classification)
+    end as pct_of_class_abs_amount
+  from base b
 )
 select
-  ct.date,
-  ct.name,
-  ct.merchant_name,
-  ct.effective_merchant,
-  ct.amount,
-  a.account_id,
-  a.name as account_name,
-  pi.label as item_label,
-  ct.classification,
-  ct.behavior_axis,
-  ct.category,
-  ct.matched_rule_id
-from classified_transactions ct
-join {ACCOUNTS_TABLE} a
-  on a.id = ct.account_pk
-join {PLAID_ITEMS_TABLE} pi
-  on pi.id = a.plaid_item_pk
-where a.include_in_app = true
-  and a.active = true
-  and ct.removed = false
-  and coalesce(ct.pending, false) = false
-  and ct.last_seen_run_id = %s
-order by ct.date desc, ct.amount desc;
-"""
-
-
-WTD_TOTALS = f"""
-select
-  coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as wtd_spent,
-  coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as wtd_received
-from {TRANSACTIONS_TABLE} t
-join {ACCOUNTS_TABLE} a
-  on a.id = t.account_pk
-where a.include_in_app = true
-  and a.active = true
-  and t.removed = false
-  and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('week', (now() at time zone '{SQL_TZ}'))::date
-  and t.date <= (now() at time zone '{SQL_TZ}')::date;
-"""
-
-
-MTD_TOTALS = f"""
-select
-  coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as mtd_spent,
-  coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as mtd_received
-from {TRANSACTIONS_TABLE} t
-join {ACCOUNTS_TABLE} a
-  on a.id = t.account_pk
-where a.include_in_app = true
-  and a.active = true
-  and t.removed = false
-  and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('month', (now() at time zone '{SQL_TZ}'))::date
-  and t.date <= (now() at time zone '{SQL_TZ}')::date;
-"""
-
-
-YTD_TOTALS = f"""
-select
-  coalesce(sum(case when t.amount > 0 then t.amount else 0 end), 0) as ytd_spent,
-  coalesce(sum(case when t.amount < 0 then -t.amount else 0 end), 0) as ytd_received
-from {TRANSACTIONS_TABLE} t
-join {ACCOUNTS_TABLE} a
-  on a.id = t.account_pk
-where a.include_in_app = true
-  and a.active = true
-  and t.removed = false
-  and coalesce(t.pending, false) = false
-  and t.date >= date_trunc('year', (now() at time zone '{SQL_TZ}'))::date
-  and t.date <= (now() at time zone '{SQL_TZ}')::date;
+  classification,
+  classification_source,
+  tx_count,
+  abs_amount_sum,
+  pct_of_class_abs_amount
+from with_pct
+order by classification, classification_source;
 """

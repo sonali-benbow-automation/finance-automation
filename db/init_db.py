@@ -17,6 +17,7 @@ def main():
         "HOSTED_LINK_SESSIONS_TABLE": TABLES["hosted_link_sessions"],
         "PLAID_WEBHOOK_EVENTS_TABLE": TABLES["plaid_webhook_events"],
         "MERCHANT_RULES_TABLE": TABLES["merchant_rules"],
+        "MANUAL_BALANCES_TABLE": TABLES["manual_balances"],
     })
     with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
