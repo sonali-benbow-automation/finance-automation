@@ -196,6 +196,32 @@ create table if not exists ${MANUAL_BALANCES_TABLE} (
   constraint manual_balances_unique_env_key unique (env, key)
 );
 
+create table if not exists ${MANUAL_BALANCE_HISTORY_TABLE} (
+  id bigserial primary key,
+  env text not null,
+  key text not null,
+  signed_balance numeric not null,
+  snapshot_at timestamptz not null default now(),
+  note text
+);
+
+create or replace function log_manual_balance_change()
+returns trigger as $$$$
+begin
+  insert into ${MANUAL_BALANCE_HISTORY_TABLE} (env, key, signed_balance, snapshot_at, note)
+  values (new.env, new.key, new.signed_balance, now(), new.note);
+  return new;
+end;
+$$$$ language plpgsql;
+
+drop trigger if exists trg_log_manual_balance_change on ${MANUAL_BALANCES_TABLE};
+
+create trigger trg_log_manual_balance_change
+after insert or update of signed_balance, note
+on ${MANUAL_BALANCES_TABLE}
+for each row
+execute function log_manual_balance_change();
+
 alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${TRANSACTIONS_TABLE} enable row level security;
@@ -207,6 +233,7 @@ alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
 alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
 alter table ${MERCHANT_RULES_TABLE} enable row level security;
 alter table ${MANUAL_BALANCES_TABLE} enable row level security;
+alter table ${MANUAL_BALANCE_HISTORY_TABLE} enable row level security;
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
@@ -256,4 +283,8 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${MANUAL_BALANCES_TABLE};
 create policy service_role_all on ${MANUAL_BALANCES_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${MANUAL_BALANCE_HISTORY_TABLE};
+create policy service_role_all on ${MANUAL_BALANCE_HISTORY_TABLE}
 for all to service_role using (true) with check (true);

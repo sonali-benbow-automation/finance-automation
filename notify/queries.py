@@ -7,11 +7,13 @@ BALANCE_SNAPSHOTS_TABLE = TABLES["balance_snapshots"]
 TRANSACTIONS_TABLE = TABLES["transactions"]
 MERCHANT_RULES_TABLE = TABLES["merchant_rules"]
 MANUAL_BALANCES_TABLE = TABLES["manual_balances"]
+MANUAL_BALANCE_HISTORY_TABLE = TABLES["manual_balance_history"]
 
 SQL_TZ = TIMEZONE or "America/New_York"
 
 
-UPDATE_MANUAL_BALANCES_TABLE = f"""insert into
+UPDATE_MANUAL_BALANCES_TABLE = f"""
+insert into
 manual_balances (env, key, label, signed_balance, note, updated_at)
 values (
   'production',
@@ -25,7 +27,8 @@ on conflict (env, key) do update set
   signed_balance = excluded.signed_balance,
   label = excluded.label,
   note = excluded.note,
-  updated_at = now();"""
+  updated_at = now();
+"""
 
 
 RUN_META = f"""
@@ -44,12 +47,13 @@ where id = %s;
 
 BALANCES_WITH_PREV_FOR_RUN = f"""
 with current_run as (
-  select id, env
+  select id, env, started_at
   from {RUNS_TABLE}
   where id = %s
 ),
 prior_run as (
-  select r.id as prior_run_id
+  select r.id as prior_run_id,
+         r.started_at as prior_started_at
   from {RUNS_TABLE} r
   join current_run cr on cr.env = r.env
   where r.run_type = 'daily_sync'
@@ -58,7 +62,8 @@ prior_run as (
   order by r.id desc
   limit 1
 ),
-current_per_account as (
+
+plaid_current_per_account as (
   select
     bs.account_pk,
     coalesce(nullif(a.official_name, ''), nullif(a.name, ''), a.account_id) as account_name,
@@ -69,15 +74,13 @@ current_per_account as (
       else coalesce(bs.current, 0)
     end as current_signed
   from {BALANCE_SNAPSHOTS_TABLE} bs
-  join {ACCOUNTS_TABLE} a
-    on a.id = bs.account_pk
-  join current_run cr
-    on true
+  join {ACCOUNTS_TABLE} a on a.id = bs.account_pk
+  join current_run cr on true
   where bs.run_id = cr.id
     and a.include_in_app = true
     and a.active = true
 ),
-prior_per_account as (
+plaid_prior_per_account as (
   select
     bs.account_pk,
     case
@@ -85,14 +88,12 @@ prior_per_account as (
       else coalesce(bs.current, 0)
     end as prior_signed
   from {BALANCE_SNAPSHOTS_TABLE} bs
-  join {ACCOUNTS_TABLE} a
-    on a.id = bs.account_pk
-  join prior_run pr
-    on pr.prior_run_id = bs.run_id
+  join {ACCOUNTS_TABLE} a on a.id = bs.account_pk
+  join prior_run pr on pr.prior_run_id = bs.run_id
   where a.include_in_app = true
     and a.active = true
 ),
-joined as (
+plaid_joined as (
   select
     c.account_name,
     c.account_type,
@@ -105,10 +106,63 @@ joined as (
       when abs(p.prior_signed) = 0 then null
       else (c.current_signed - p.prior_signed) / abs(p.prior_signed)
     end as pct_change_abs
-  from current_per_account c
-  left join prior_per_account p
-    on p.account_pk = c.account_pk
+  from plaid_current_per_account c
+  left join plaid_prior_per_account p on p.account_pk = c.account_pk
 ),
+
+manual_current as (
+  select
+    mb.env,
+    mb.key,
+    mb.label as account_name,
+    'manual' as account_type,
+    mb.key as account_subtype,
+    mb.signed_balance as current_signed
+  from {MANUAL_BALANCES_TABLE} mb
+  join current_run cr on cr.env = mb.env
+),
+manual_prior as (
+  select
+    mb.env,
+    mb.key,
+    h.signed_balance as prior_signed
+  from manual_current mb
+  left join prior_run pr on true
+  left join lateral (
+    select h.signed_balance
+    from {MANUAL_BALANCE_HISTORY_TABLE} h
+    where h.env = mb.env
+      and h.key = mb.key
+      and pr.prior_started_at is not null
+      and h.snapshot_at <= pr.prior_started_at
+    order by h.snapshot_at desc
+    limit 1
+  ) h on true
+),
+manual_joined as (
+  select
+    mc.account_name,
+    mc.account_type,
+    mc.account_subtype,
+    mc.current_signed,
+    mp.prior_signed,
+    (mc.current_signed - coalesce(mp.prior_signed, 0)) as delta_signed,
+    case
+      when mp.prior_signed is null then null
+      when abs(mp.prior_signed) = 0 then null
+      else (mc.current_signed - mp.prior_signed) / abs(mp.prior_signed)
+    end as pct_change_abs
+  from manual_current mc
+  left join manual_prior mp
+    on mp.env = mc.env and mp.key = mc.key
+),
+
+joined as (
+  select * from plaid_joined
+  union all
+  select * from manual_joined
+),
+
 unioned as (
   select
     'account' as row_type,
@@ -130,9 +184,16 @@ unioned as (
     null as account_type,
     null as account_subtype,
     coalesce(sum(current_signed), 0) as current_signed,
-    coalesce(sum(prior_signed), 0) as prior_signed,
-    coalesce(sum(current_signed), 0) - coalesce(sum(prior_signed), 0) as delta_signed,
     case
+      when count(prior_signed) = 0 then null
+      else coalesce(sum(prior_signed), 0)
+    end as prior_signed,
+    case
+      when count(prior_signed) = 0 then null
+      else coalesce(sum(current_signed), 0) - coalesce(sum(prior_signed), 0)
+    end as delta_signed,
+    case
+      when count(prior_signed) = 0 then null
       when coalesce(sum(prior_signed), 0) = 0 then null
       else (coalesce(sum(current_signed), 0) - coalesce(sum(prior_signed), 0)) / abs(coalesce(sum(prior_signed), 0))
     end as pct_change_abs,
@@ -208,7 +269,7 @@ matching_rules as (
    and r.active = true
    and e.effective_merchant is not null
    and (
-     (r.match_type = 'ilike' and e.effective_merchant ilike ('%' || r.pattern || '%'))
+     (r.match_type = 'ilike' and e.effective_merchant ilike ('%%' || r.pattern || '%%'))
      or
      (r.match_type = 'contains' and position(r.pattern in e.effective_merchant) > 0)
      or
@@ -244,31 +305,31 @@ pfc_mapped as (
   select
     p.tx_pk,
     case
-      when p.pfc_primary in ('INCOME', 'PAYROLL', 'BONUS', 'BENEFITS') then 'income'
-      when p.pfc_primary in ('TRANSFER_IN', 'TRANSFER_OUT') then 'transfer'
-      when p.pfc_primary in ('INVESTMENT', 'INVESTMENT_INCOME', 'SECURITIES_TRADES') then 'invest'
-      when p.pfc_primary in ('BANK_FEES', 'OVERDRAFT', 'INTEREST_CHARGED', 'LATE_FEE') then 'fee'
+      when p.pfc_primary in ('income', 'payroll', 'bonus', 'benefits') then 'income'
+      when p.pfc_primary in ('transfer_in', 'transfer_out') then 'transfer'
+      when p.pfc_primary in ('investment', 'investment_income', 'securities_trades') then 'invest'
+      when p.pfc_primary in ('bank_fees', 'overdraft', 'interest_charged', 'late_fee') then 'fee'
       when p.pfc_primary = '' then 'unknown'
       else 'expense'
     end as mapped_classification,
     case
       when p.pfc_primary in (
-        'GROCERIES',
-        'TRANSPORTATION',
-        'GAS',
-        'PUBLIC_TRANSIT',
-        'HEALTHCARE',
-        'MEDICAL',
-        'PHARMACY',
-        'INSURANCE',
-        'UTILITIES',
-        'RENT',
-        'MORTGAGE',
-        'PHONE',
-        'INTERNET',
-        'CHILDCARE',
-        'EDUCATION',
-        'TAXES'
+        'groceries',
+        'transportation',
+        'gas',
+        'public_transit',
+        'healthcare',
+        'medical',
+        'pharmacy',
+        'insurance',
+        'utilities',
+        'rent',
+        'mortgage',
+        'phone',
+        'internet',
+        'childcare',
+        'education',
+        'taxes'
       ) then 'necessity'
       when p.pfc_primary = '' then null
       else 'discretionary'
@@ -351,36 +412,65 @@ TOTALS_DELTA_SELECT = """
   cur.true_spend,
   prev.true_spend as true_spend_prev,
   (cur.true_spend - prev.true_spend) as true_spend_delta,
-  case when prev.true_spend = 0 then null else (cur.true_spend - prev.true_spend) / abs(prev.true_spend) end as true_spend_pct_change_abs,
+  case
+    when prev.true_spend is null then null
+    when prev.true_spend = 0 then null
+    else (cur.true_spend - prev.true_spend) / abs(prev.true_spend)
+  end as true_spend_pct_change_abs,
 
   cur.necessity_spend,
   prev.necessity_spend as necessity_spend_prev,
   (cur.necessity_spend - prev.necessity_spend) as necessity_spend_delta,
-  case when prev.necessity_spend = 0 then null else (cur.necessity_spend - prev.necessity_spend) / abs(prev.necessity_spend) end as necessity_spend_pct_change_abs,
+  case
+    when prev.necessity_spend is null then null
+    when prev.necessity_spend = 0 then null
+    else (cur.necessity_spend - prev.necessity_spend) / abs(prev.necessity_spend)
+  end as necessity_spend_pct_change_abs,
 
   cur.discretionary_spend,
   prev.discretionary_spend as discretionary_spend_prev,
   (cur.discretionary_spend - prev.discretionary_spend) as discretionary_spend_delta,
-  case when prev.discretionary_spend = 0 then null else (cur.discretionary_spend - prev.discretionary_spend) / abs(prev.discretionary_spend) end as discretionary_spend_pct_change_abs,
+  case
+    when prev.discretionary_spend is null then null
+    when prev.discretionary_spend = 0 then null
+    else (cur.discretionary_spend - prev.discretionary_spend) / abs(prev.discretionary_spend)
+  end as discretionary_spend_pct_change_abs,
 
   cur.true_income,
   prev.true_income as true_income_prev,
   (cur.true_income - prev.true_income) as true_income_delta,
-  case when prev.true_income = 0 then null else (cur.true_income - prev.true_income) / abs(prev.true_income) end as true_income_pct_change_abs,
+  case
+    when prev.true_income is null then null
+    when prev.true_income = 0 then null
+    else (cur.true_income - prev.true_income) / abs(prev.true_income)
+  end as true_income_pct_change_abs,
 
   cur.reimbursements,
   prev.reimbursements as reimbursements_prev,
   (cur.reimbursements - prev.reimbursements) as reimbursements_delta,
-  case when prev.reimbursements = 0 then null else (cur.reimbursements - prev.reimbursements) / abs(prev.reimbursements) end as reimbursements_pct_change_abs,
+  case
+    when prev.reimbursements is null then null
+    when prev.reimbursements = 0 then null
+    else (cur.reimbursements - prev.reimbursements) / abs(prev.reimbursements)
+  end as reimbursements_pct_change_abs,
 
   cur.savings,
   prev.savings as savings_prev,
   (cur.savings - prev.savings) as savings_delta,
-  case when prev.savings = 0 then null else (cur.savings - prev.savings) / abs(prev.savings) end as savings_pct_change_abs,
+  case
+    when prev.savings is null then null
+    when prev.savings = 0 then null
+    else (cur.savings - prev.savings) / abs(prev.savings)
+  end as savings_pct_change_abs,
 
   cur.savings_rate,
   prev.savings_rate as savings_rate_prev,
-  (cur.savings_rate - prev.savings_rate) as savings_rate_delta
+  (cur.savings_rate - prev.savings_rate) as savings_rate_delta,
+  case
+    when prev.savings_rate is null then null
+    when abs(prev.savings_rate) = 0 then null
+    else (cur.savings_rate - prev.savings_rate) / abs(prev.savings_rate)
+  end as savings_rate_pct_change_abs
 """
 
 
@@ -410,7 +500,7 @@ prior_run as (
   order by r.id desc
   limit 1
 ),
-{CLASSIFIED_TX_FOR_ENV_CTE}
+{CLASSIFIED_TX_FOR_ENV_CTE},
 scoped as (
   select 'current' as scope, x.*
   from classified_tx x
@@ -431,8 +521,54 @@ agg as (
   from scoped x
   group by scope
 ),
-cur as (select * from agg where scope = 'current'),
-prev as (select * from agg where scope = 'prior')
+cur as (
+  select *
+  from agg
+  where scope = 'current'
+
+  union all
+
+  select
+    'current' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'current')
+),
+prev as (
+  select *
+  from agg
+  where scope = 'prior'
+
+  union all
+
+  select
+    'prior' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'prior')
+)
 select
   {TOTALS_DELTA_SELECT}
 from cur
@@ -452,7 +588,7 @@ prev_bounds as (
     (b.cur_end - interval '7 days')::date as prev_end
   from bounds b
 ),
-{CLASSIFIED_TX_FOR_ENV_CTE}
+{CLASSIFIED_TX_FOR_ENV_CTE},
 scoped as (
   select 'current' as scope, x.*
   from classified_tx x
@@ -475,8 +611,54 @@ agg as (
   from scoped x
   group by scope
 ),
-cur as (select * from agg where scope = 'current'),
-prev as (select * from agg where scope = 'prior')
+cur as (
+  select *
+  from agg
+  where scope = 'current'
+
+  union all
+
+  select
+    'current' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'current')
+),
+prev as (
+  select *
+  from agg
+  where scope = 'prior'
+
+  union all
+
+  select
+    'prior' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'prior')
+)
 select
   {TOTALS_DELTA_SELECT}
 from cur
@@ -499,7 +681,7 @@ prev_bounds as (
     ) as prev_end
   from bounds b
 ),
-{CLASSIFIED_TX_FOR_ENV_CTE}
+{CLASSIFIED_TX_FOR_ENV_CTE},
 scoped as (
   select 'current' as scope, x.*
   from classified_tx x
@@ -522,8 +704,54 @@ agg as (
   from scoped x
   group by scope
 ),
-cur as (select * from agg where scope = 'current'),
-prev as (select * from agg where scope = 'prior')
+cur as (
+  select *
+  from agg
+  where scope = 'current'
+
+  union all
+
+  select
+    'current' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'current')
+),
+prev as (
+  select *
+  from agg
+  where scope = 'prior'
+
+  union all
+
+  select
+    'prior' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'prior')
+)
 select
   {TOTALS_DELTA_SELECT}
 from cur
@@ -546,7 +774,7 @@ prev_bounds as (
     ) as prev_end
   from bounds b
 ),
-{CLASSIFIED_TX_FOR_ENV_CTE}
+{CLASSIFIED_TX_FOR_ENV_CTE},
 scoped as (
   select 'current' as scope, x.*
   from classified_tx x
@@ -569,8 +797,54 @@ agg as (
   from scoped x
   group by scope
 ),
-cur as (select * from agg where scope = 'current'),
-prev as (select * from agg where scope = 'prior')
+cur as (
+  select *
+  from agg
+  where scope = 'current'
+
+  union all
+
+  select
+    'current' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'current')
+),
+prev as (
+  select *
+  from agg
+  where scope = 'prior'
+
+  union all
+
+  select
+    'prior' as scope,
+    null::numeric as true_spend,
+    null::numeric as necessity_spend,
+    null::numeric as discretionary_spend,
+    null::numeric as true_income,
+    null::numeric as reimbursements,
+    null::numeric as savings,
+    null::numeric as savings_rate,
+    null::numeric as transfers_out,
+    null::numeric as transfers_in,
+    null::numeric as invest_out,
+    null::numeric as invest_in,
+    null::numeric as fees_out,
+    null::numeric as ignored_abs
+  where not exists (select 1 from agg where scope = 'prior')
+)
 select
   {TOTALS_DELTA_SELECT}
 from cur
@@ -603,7 +877,7 @@ order by x.date desc, x.amount desc;
 
 CLASSIFICATION_SOURCE_BREAKDOWN_FOR_RUN = f"""
 with
-{CLASSIFIED_TX_FOR_ENV_CTE}
+{CLASSIFIED_TX_FOR_ENV_CTE},
 base as (
   select
     x.classification,

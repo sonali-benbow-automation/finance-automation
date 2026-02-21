@@ -19,9 +19,9 @@ from notify.queries import (
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
 
 
-def to_decimal(v):
+def to_decimal_or_none(v):
     if v is None:
-        return Decimal("0")
+        return None
     if isinstance(v, Decimal):
         return v
     return Decimal(str(v))
@@ -45,7 +45,7 @@ def fetch_all(conn, sql, params=None):
         return [dict(zip(cols, r)) for r in rows]
 
 
-def normalize_pct(v):
+def normalize_pct_or_none(v):
     if v is None:
         return None
     try:
@@ -57,7 +57,9 @@ def normalize_pct(v):
 def normalize_totals_row(row):
     if not row:
         return {}
+
     out = dict(row)
+
     money_fields = [
         "true_spend",
         "true_spend_prev",
@@ -84,6 +86,7 @@ def normalize_totals_row(row):
         "fees_out",
         "ignored_abs",
     ]
+
     pct_fields = [
         "true_spend_pct_change_abs",
         "necessity_spend_pct_change_abs",
@@ -94,19 +97,24 @@ def normalize_totals_row(row):
         "savings_rate",
         "savings_rate_prev",
         "savings_rate_delta",
+        "savings_rate_pct_change_abs",
     ]
+
     for k in money_fields:
         if k in out:
-            out[k] = to_decimal(out.get(k))
+            out[k] = to_decimal_or_none(out.get(k))
+
     for k in pct_fields:
         if k in out:
-            out[k] = normalize_pct(out.get(k))
+            out[k] = normalize_pct_or_none(out.get(k))
+
     return out
 
 
 def build_daily_summary_data(run_id, include_transactions=True):
     now_local = datetime.now(TZ)
     generated_label = now_local.strftime("%Y-%m-%d %H:%M %Z")
+
     with db_conn() as conn:
         meta = fetch_one(conn, RUN_META, (run_id,))
         balances = fetch_all(conn, BALANCES_WITH_PREV_FOR_RUN, (run_id,))
@@ -117,6 +125,7 @@ def build_daily_summary_data(run_id, include_transactions=True):
         ytd_with_prev = fetch_one(conn, YTD_TOTALS_WITH_PREV)
         source_breakdown = fetch_all(conn, CLASSIFICATION_SOURCE_BREAKDOWN_FOR_RUN, (run_id,))
         txs = fetch_all(conn, POSTED_TRANSACTIONS_FOR_RUN, (run_id,)) if include_transactions else []
+
     return {
         "run_id": run_id,
         "generated_label": generated_label,

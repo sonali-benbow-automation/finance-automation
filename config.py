@@ -18,6 +18,7 @@ TABLES = {
     "plaid_webhook_events": os.getenv("PLAID_WEBHOOK_EVENTS_TABLE", "plaid_webhook_events"),
     "merchant_rules": os.getenv("MERCHANT_RULES_TABLE", "merchant_rules"),
     "manual_balances": os.getenv("MANUAL_BALANCES_TABLE", "manual_balances"),
+    "manual_balance_history": os.getenv("MANUAL_BALANCE_HISTORY_TABLE", "manual_balance_history"),
 }
 
 def table(name):
