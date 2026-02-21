@@ -9,10 +9,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 TABLES = {
     "plaid_items": os.getenv("PLAID_ITEMS_TABLE", "plaid_items"),
     "accounts": os.getenv("ACCOUNTS_TABLE", "accounts"),
-    "balance_snapshots": os.getenv("BALANCE_SNAPSHOTS_TABLE", "balance_snapshots"),
-    "transactions": os.getenv("TRANSACTIONS_TABLE", "transactions"),
     "cursors": os.getenv("CURSORS_TABLE", "cursors"),
     "runs": os.getenv("RUNS_TABLE", "runs"),
+    "plaid_balances_raw": os.getenv("PLAID_BALANCES_RAW_TABLE", "plaid_balances_raw"),
+    "plaid_transactions_raw": os.getenv("PLAID_TRANSACTIONS_RAW_TABLE", "plaid_transactions_raw"),
     "notifications": os.getenv("NOTIFICATIONS_TABLE", "notifications"),
     "hosted_link_sessions": os.getenv("HOSTED_LINK_SESSIONS_TABLE", "hosted_link_sessions"),
     "plaid_webhook_events": os.getenv("PLAID_WEBHOOK_EVENTS_TABLE", "plaid_webhook_events"),

@@ -5,9 +5,8 @@ from plaid_src.client import get_plaid_client
 from db.repos.runs import create_run, finish_run
 from db.repos.items import list_items_for_balances, list_items_for_transactions, get_access_token
 from db.repos.accounts import upsert_account, get_included_accounts
-from db.repos.balances import upsert_balance_snapshot
+from db.repos.plaid_raw import insert_plaid_balances_raw, insert_plaid_transactions_raw
 from db.repos.cursors import get_transactions_cursor, set_transactions_cursor
-from db.repos.transactions import upsert_transaction, mark_transaction_removed
 from config import TRANSACTIONS_START_DATE, PLAID_ENV
 
 
@@ -40,7 +39,7 @@ def tx_date_ok(tx, start_date):
     return date.fromisoformat(str(d)) >= start_date
 
 
-def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
+def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, env):
     access_token = get_access_token(conn, plaid_item_pk)
     if not access_token:
         raise RuntimeError(f"Missing access token for plaid_item_pk={plaid_item_pk} label={label}")
@@ -48,11 +47,14 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
     accounts = response.get("accounts", []) or []
     for account_obj in accounts:
         account = to_plain(account_obj) or {}
+        account_id = account.get("account_id")
+        if not account_id:
+            continue
         bal = to_plain(account.get("balances")) or {}
         upsert_account(
             conn=conn,
             plaid_item_pk=plaid_item_pk,
-            account_id=account["account_id"],
+            account_id=account_id,
             name=account.get("name"),
             official_name=account.get("official_name"),
             account_type=account.get("type"),
@@ -61,70 +63,50 @@ def ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label):
             iso_currency_code=bal.get("iso_currency_code"),
             raw=account,
         )
-    included = get_included_accounts(conn, plaid_item_pk)
-    for account_obj in accounts:
-        account = to_plain(account_obj) or {}
-        account_pk = included.get(account.get("account_id"))
-        if not account_pk:
-            continue
-        bal = to_plain(account.get("balances")) or {}
-        upsert_balance_snapshot(
-            conn=conn,
-            run_id=run_id,
-            account_pk=account_pk,
-            current=bal.get("current"),
-            available=bal.get("available"),
-            credit_limit=bal.get("limit"),
-            iso_currency_code=bal.get("iso_currency_code"),
-            raw=bal,
-        )
+    insert_plaid_balances_raw(conn, run_id, plaid_item_pk, label, env, response)
 
 
 def ingest_balances(conn, client, run_id, env):
     items = list_items_for_balances(conn, env_override=env)
     for plaid_item_pk, label in items:
-        ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label)
+        ingest_balances_for_item(conn, client, run_id, plaid_item_pk, label, env)
 
 
-def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
+def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label, env):
     access_token = get_access_token(conn, plaid_item_pk)
     if not access_token:
         raise RuntimeError(f"Missing access token for plaid_item_pk={plaid_item_pk} label={label}")
-    start_date = parse_start_date(TRANSACTIONS_START_DATE)
-    included = get_included_accounts(conn, plaid_item_pk)
     cursor = get_transactions_cursor(conn, plaid_item_pk)
-    next_cursor_value = cursor
+    start_date = parse_start_date(TRANSACTIONS_START_DATE)
+    apply_filter = (cursor is None and start_date is not None)
     has_more = True
+    page_index = 0
+    next_cursor_value = cursor
     while has_more:
         req = {"access_token": access_token}
-        if cursor:
-            req["cursor"] = cursor
+        if next_cursor_value:
+            req["cursor"] = next_cursor_value
         resp = to_plain(client.transactions_sync(req)) or {}
-        for tx_obj in resp.get("added", []) or []:
-            tx = to_plain(tx_obj) or {}
-            account_pk = included.get(tx.get("account_id"))
-            if not account_pk:
-                continue
-            if not tx_date_ok(tx, start_date):
-                continue
-            upsert_transaction(conn, run_id, account_pk, tx, sync_status="added")
-        for tx_obj in resp.get("modified", []) or []:
-            tx = to_plain(tx_obj) or {}
-            account_pk = included.get(tx.get("account_id"))
-            if not account_pk:
-                continue
-            if not tx_date_ok(tx, start_date):
-                continue
-            upsert_transaction(conn, run_id, account_pk, tx, sync_status="modified")
-        for removed_obj in resp.get("removed", []) or []:
-            removed = to_plain(removed_obj) or {}
-            tx_id = removed.get("transaction_id")
-            if tx_id:
-                mark_transaction_removed(conn, run_id, tx_id)
+        payload_to_store = resp
+        if apply_filter:
+            payload_to_store = dict(resp)
+            filtered_added = []
+            for tx in resp.get("added", []):
+                tx_object = to_plain(tx) or {}
+                if tx_date_ok(tx_object, start_date):
+                    filtered_added.append(tx_object)
+            filtered_modified = []
+            for tx in resp.get("modified", []):
+                tx_object = to_plain(tx) or {}
+                if tx_date_ok(tx_object, start_date):
+                    filtered_modified.append(tx_object)
+            payload_to_store["added"] = filtered_added
+            payload_to_store["modified"] = filtered_modified
+        insert_plaid_transactions_raw(
+            conn, run_id, plaid_item_pk, label, env, page_index, payload_to_store
+        )
+        page_index += 1
         next_cursor_value = resp.get("next_cursor")
-        if not next_cursor_value:
-            raise RuntimeError(f"transactions_sync missing next_cursor for plaid_item_pk={plaid_item_pk} label={label}")
-        cursor = next_cursor_value
         has_more = bool(resp.get("has_more", False))
     set_transactions_cursor(conn, plaid_item_pk, next_cursor_value)
 
@@ -132,7 +114,7 @@ def ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label):
 def ingest_transactions(conn, client, run_id, env):
     items = list_items_for_transactions(conn, env_override=env)
     for plaid_item_pk, label in items:
-        ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label)
+        ingest_transactions_sync(conn, client, run_id, plaid_item_pk, label, env)
 
 
 def run_ingest(env=None):

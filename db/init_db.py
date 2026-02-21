@@ -8,11 +8,11 @@ def main():
         raw_sql = f.read()
     sql = Template(raw_sql).safe_substitute({
         "PLAID_ITEMS_TABLE": TABLES["plaid_items"],
-        "BALANCE_SNAPSHOTS_TABLE": TABLES["balance_snapshots"],
         "RUNS_TABLE": TABLES["runs"],
         "ACCOUNTS_TABLE": TABLES["accounts"],
         "CURSORS_TABLE": TABLES["cursors"],
-        "TRANSACTIONS_TABLE": TABLES["transactions"],
+        "PLAID_BALANCES_RAW_TABLE": TABLES["plaid_balances_raw"],
+        "PLAID_TRANSACTIONS_RAW_TABLE": TABLES["plaid_transactions_raw"],
         "NOTIFICATIONS_TABLE": TABLES["notifications"],
         "HOSTED_LINK_SESSIONS_TABLE": TABLES["hosted_link_sessions"],
         "PLAID_WEBHOOK_EVENTS_TABLE": TABLES["plaid_webhook_events"],

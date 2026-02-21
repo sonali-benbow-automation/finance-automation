@@ -58,59 +58,33 @@ create table if not exists ${CURSORS_TABLE} (
     foreign key (plaid_item_pk) references ${PLAID_ITEMS_TABLE}(id) on delete cascade
 );
 
-create table if not exists ${BALANCE_SNAPSHOTS_TABLE} (
+create table if not exists ${PLAID_BALANCES_RAW_TABLE} (
   id bigserial primary key,
   run_id bigint not null,
-  account_pk bigint not null,
-  current numeric,
-  available numeric,
-  credit_limit numeric,
-  iso_currency_code text,
-  snapshot_at timestamptz not null default now(),
-  raw jsonb,
-  constraint balance_snapshots_run_fk
+  plaid_item_pk bigint not null,
+  label text,
+  env text not null default 'sandbox',
+  fetched_at timestamptz not null default now(),
+  payload jsonb not null,
+  constraint plaid_balances_raw_run_fk
     foreign key (run_id) references ${RUNS_TABLE}(id) on delete cascade,
-  constraint balance_snapshots_account_fk
-    foreign key (account_pk) references ${ACCOUNTS_TABLE}(id) on delete cascade,
-  constraint balance_snapshots_unique_per_run_account
-    unique (run_id, account_pk)
+  constraint plaid_balances_raw_item_fk
+    foreign key (plaid_item_pk) references ${PLAID_ITEMS_TABLE}(id) on delete cascade
 );
 
-create table if not exists ${TRANSACTIONS_TABLE} (
+create table if not exists ${PLAID_TRANSACTIONS_RAW_TABLE} (
   id bigserial primary key,
-  account_pk bigint not null,
-  transaction_id text not null unique,
-  amount numeric not null,
-  iso_currency_code text,
-  date date,
-  pending boolean not null default false,
-  pending_transaction_id text,
-  name text,
-  merchant_name text,
-  category_id text,
-  category text,
-  personal_finance_category jsonb,
-  payment_channel text,
-  transaction_type text,
-  authorized_date date,
-  datetime timestamptz,
-  authorized_datetime timestamptz,
-  sync_status text not null,
-  constraint transactions_sync_status_check
-    check (sync_status in ('added','modified','removed')),
-  removed boolean not null default false,
-  removed_at timestamptz,
-  first_seen_run_id bigint,
-  last_seen_run_id bigint,
-  raw jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint transactions_account_fk
-    foreign key (account_pk) references ${ACCOUNTS_TABLE}(id) on delete cascade,
-  constraint transactions_first_seen_run_fk
-    foreign key (first_seen_run_id) references ${RUNS_TABLE}(id),
-  constraint transactions_last_seen_run_fk
-    foreign key (last_seen_run_id) references ${RUNS_TABLE}(id)
+  run_id bigint not null,
+  plaid_item_pk bigint not null,
+  label text,
+  env text not null default 'sandbox',
+  fetched_at timestamptz not null default now(),
+  page_index integer not null,
+  payload jsonb not null,
+  constraint plaid_transactions_raw_run_fk
+    foreign key (run_id) references ${RUNS_TABLE}(id) on delete cascade,
+  constraint plaid_transactions_raw_item_fk
+    foreign key (plaid_item_pk) references ${PLAID_ITEMS_TABLE}(id) on delete cascade
 );
 
 create table if not exists ${NOTIFICATIONS_TABLE} (
@@ -224,8 +198,6 @@ execute function log_manual_balance_change();
 
 alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
-alter table ${TRANSACTIONS_TABLE} enable row level security;
-alter table ${BALANCE_SNAPSHOTS_TABLE} enable row level security;
 alter table ${CURSORS_TABLE} enable row level security;
 alter table ${RUNS_TABLE} enable row level security;
 alter table ${NOTIFICATIONS_TABLE} enable row level security;
@@ -247,14 +219,6 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${ACCOUNTS_TABLE};
 create policy service_role_all on ${ACCOUNTS_TABLE}
-for all to service_role using (true) with check (true);
-
-drop policy if exists service_role_all on ${TRANSACTIONS_TABLE};
-create policy service_role_all on ${TRANSACTIONS_TABLE}
-for all to service_role using (true) with check (true);
-
-drop policy if exists service_role_all on ${BALANCE_SNAPSHOTS_TABLE};
-create policy service_role_all on ${BALANCE_SNAPSHOTS_TABLE}
 for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${CURSORS_TABLE};
