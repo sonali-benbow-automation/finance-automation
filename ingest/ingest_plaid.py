@@ -4,7 +4,7 @@ from plaid_src.client import get_plaid_client
 
 from db.repos.runs import create_run, finish_run
 from db.repos.items import list_items_for_balances, list_items_for_transactions, get_access_token
-from db.repos.accounts import upsert_account, get_included_accounts
+from db.repos.accounts import upsert_account
 from db.repos.plaid_raw import insert_plaid_balances_raw, insert_plaid_transactions_raw
 from db.repos.cursors import get_transactions_cursor, set_transactions_cursor
 from config import TRANSACTIONS_START_DATE, PLAID_ENV
