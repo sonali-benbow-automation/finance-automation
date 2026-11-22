@@ -11,10 +11,10 @@ create table if not exists ${PLAID_ITEMS_TABLE} (
   access_token_kid text not null default 'v1',
   transactions_enabled boolean not null default false,
   balances_enabled boolean not null default true,
-  active boolean not null default true,
-  archived_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  active boolean not null default true,
+  archived_at timestamptz,
   constraint plaid_items_unique_env_label unique (env, label)
 );
 
@@ -85,6 +85,47 @@ create table if not exists ${PLAID_TRANSACTIONS_RAW_TABLE} (
     foreign key (run_id) references ${RUNS_TABLE}(id) on delete cascade,
   constraint plaid_transactions_raw_item_fk
     foreign key (plaid_item_pk) references ${PLAID_ITEMS_TABLE}(id) on delete cascade
+);
+
+create table if not exists ${TRANSACTIONS_TABLE} (
+  id bigserial not null,
+  account_pk bigint not null,
+  transaction_id text not null,
+  amount numeric not null,
+  iso_currency_code text null,
+  date date null,
+  pending boolean not null default false,
+  pending_transaction_id text null,
+  name text null,
+  merchant_name text null,
+  category_id text null,
+  category text null,
+  personal_finance_category jsonb null,
+  payment_channel text null,
+  transaction_type text null,
+  authorized_date date null,
+  datetime timestamp with time zone null,
+  authorized_datetime timestamp with time zone null,
+  sync_status text not null,
+  removed boolean not null default false,
+  removed_at timestamp with time zone null,
+  first_seen_run_id bigint null,
+  last_seen_run_id bigint null,
+  raw jsonb null,
+  created_at timestamp with time zone not null default now(),
+  updated_at timestamp with time zone not null default now(),
+  constraint transactions_pkey primary key (id),
+  constraint transactions_transaction_id_key unique (transaction_id),
+  constraint transactions_account_fk foreign KEY (account_pk) references ${ACCOUNTS_TABLE} (id) on delete CASCADE,
+  constraint transactions_first_seen_run_fk foreign KEY (first_seen_run_id) references ${RUNS_TABLE} (id),
+  constraint transactions_last_seen_run_fk foreign KEY (last_seen_run_id) references ${RUNS_TABLE} (id),
+  constraint transactions_sync_status_check check (
+    (
+      sync_status = any (
+        array['added'::text, 'modified'::text, 'removed'::text]
+      )
+    )
+  )
 );
 
 create table if not exists ${NOTIFICATIONS_TABLE} (
@@ -200,6 +241,7 @@ alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${CURSORS_TABLE} enable row level security;
 alter table ${RUNS_TABLE} enable row level security;
+alter table ${TRANSACTIONS_TABLE} enable row level security;
 alter table ${NOTIFICATIONS_TABLE} enable row level security;
 alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
 alter table ${PLAID_WEBHOOK_EVENTS_TABLE} enable row level security;
@@ -209,9 +251,6 @@ alter table ${MANUAL_BALANCE_HISTORY_TABLE} enable row level security;
 
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
-
-grant select, insert, update, delete on all tables in schema public to service_role;
-grant usage, select on all sequences in schema public to service_role;
 
 drop policy if exists service_role_all on ${PLAID_ITEMS_TABLE};
 create policy service_role_all on ${PLAID_ITEMS_TABLE}
@@ -227,6 +266,10 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${RUNS_TABLE};
 create policy service_role_all on ${RUNS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${TRANSACTIONS_TABLE};
+create policy service_role_all on ${TRANSACTIONS_TABLE}
 for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${NOTIFICATIONS_TABLE};
