@@ -103,7 +103,7 @@ def prepare_removed_transactions(raw_responses):
 
 
 
-def main():
+def main(run_id):
     from config import DATABASE_URL, TABLES
 
     spark = (
@@ -115,6 +115,7 @@ def main():
     )
     try:
         raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_transactions_raw"])
+        raw_responses = raw_responses.filter(F.col("run_id") == run_id)
         accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
         existing_transactions = read_postgres_table(spark, DATABASE_URL, TABLES["transactions"])
         prepare_new_transactions(raw_responses, accounts).show()
@@ -122,7 +123,3 @@ def main():
         prepare_removed_transactions(raw_responses)
     finally:
         spark.stop()
-
-
-if __name__ == "__main__":
-    main()
