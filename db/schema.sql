@@ -87,6 +87,24 @@ create table if not exists ${PLAID_TRANSACTIONS_RAW_TABLE} (
     foreign key (plaid_item_pk) references ${PLAID_ITEMS_TABLE}(id) on delete cascade
 );
 
+create table if not exists ${BALANCE_SNAPSHOTS_TABLE} (
+  id bigserial primary key,
+  run_id bigint not null,
+  account_pk bigint not null,
+  current numeric,
+  available numeric,
+  credit_limit numeric,
+  iso_currency_code text,
+  snapshot_at timestamptz not null default now(),
+  raw jsonb,
+  constraint balance_snapshots_run_fk
+    foreign key (run_id) references ${RUNS_TABLE}(id) on delete cascade,
+  constraint balance_snapshots_account_fk
+    foreign key (account_pk) references ${ACCOUNTS_TABLE}(id) on delete cascade,
+  constraint balance_snapshots_unique_per_run_account
+    unique (run_id, account_pk)
+);
+
 create table if not exists ${TRANSACTIONS_TABLE} (
   id bigserial not null,
   account_pk bigint not null,
@@ -241,6 +259,7 @@ alter table ${PLAID_ITEMS_TABLE} enable row level security;
 alter table ${ACCOUNTS_TABLE} enable row level security;
 alter table ${CURSORS_TABLE} enable row level security;
 alter table ${RUNS_TABLE} enable row level security;
+alter table ${BALANCE_SNAPSHOTS_TABLE} enable row level security;
 alter table ${TRANSACTIONS_TABLE} enable row level security;
 alter table ${NOTIFICATIONS_TABLE} enable row level security;
 alter table ${HOSTED_LINK_SESSIONS_TABLE} enable row level security;
@@ -266,6 +285,10 @@ for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${RUNS_TABLE};
 create policy service_role_all on ${RUNS_TABLE}
+for all to service_role using (true) with check (true);
+
+drop policy if exists service_role_all on ${BALANCE_SNAPSHOTS_TABLE};
+create policy service_role_all on ${BALANCE_SNAPSHOTS_TABLE}
 for all to service_role using (true) with check (true);
 
 drop policy if exists service_role_all on ${TRANSACTIONS_TABLE};

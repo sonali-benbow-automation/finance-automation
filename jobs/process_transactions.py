@@ -1,11 +1,14 @@
 from urllib.parse import urlparse
 from pyspark.sql import SparkSession, functions as F
+from config import DATABASE_URL, TABLES
+from db.db import db_conn
+from db.repos.transactions import write_transactions_rows
 
 
 TRANSACTION_LIST_SCHEMA = (
     "ARRAY<STRUCT<"
     "transaction_id: STRING, account_id: STRING, "
-    "date: STRING, name: STRING, amount: DECIMAL(18,2), "
+    "date: DATE, name: STRING, amount: DECIMAL(18,2), "
     "merchant_name: STRING, pending: BOOLEAN, "
     "iso_currency_code: STRING, pending_transaction_id: STRING, "
     "category_id: STRING, category: ARRAY<STRING>, "
@@ -37,11 +40,13 @@ def extract_transaction_details(raw_responses, list_name):
     transactions = raw_responses.select(
         "plaid_item_pk",
         "run_id",
+        "page_index",
         F.explode(transaction_list).alias("transaction"),
     )
     return transactions.select(
         "plaid_item_pk",
         "run_id",
+        "page_index",
         "transaction.transaction_id",
         "transaction.account_id",
         "transaction.date",
@@ -75,37 +80,16 @@ def match_transaction_accounts(transaction_details, accounts):
         how="left",
     )
 
-
-def prepare_transaction_changes(raw_responses, accounts, list_name):
-    transaction_details = extract_transaction_details(raw_responses, list_name)
-    matched_transactions = match_transaction_accounts(transaction_details, accounts)
-    return matched_transactions.withColumn("last_seen_run_id", F.col("run_id"))
-
-
-def prepare_new_transactions(raw_responses, accounts):
-    added_transactions = prepare_transaction_changes(raw_responses, accounts, "added")
-    return added_transactions.withColumn("first_seen_run_id", F.col("run_id"))
+def prepare_transactions(raw_responses, accounts):
+    added_transactions = extract_transaction_details(raw_responses, "added")
+    modified_transactions = extract_transaction_details(raw_responses, "modified")
+    removed_transactions = extract_transaction_details(raw_responses, "removed")
+    combined_transactions = (added_transactions.unionByName(modified_transactions).unionByName(removed_transactions))
+    matched_transactions = match_transaction_accounts(combined_transactions, accounts)
+    return matched_transactions.withColumn("first_seen_run_id", F.col("run_id"))
 
 
-def prepare_modified_transactions(raw_responses, accounts, existing_transactions):
-    modified_transactions = prepare_transaction_changes(raw_responses, accounts, "modified")
-    first_seen_runs = existing_transactions.select(
-        "transaction_id", "first_seen_run_id"
-    )
-    return modified_transactions.join(
-        first_seen_runs, on="transaction_id", how="inner"
-    )
-
-def prepare_removed_transactions(raw_responses):
-    return extract_transaction_details(raw_responses, "removed").select(
-        "transaction_id", "run_id"
-    )
-
-
-
-def main(run_id):
-    from config import DATABASE_URL, TABLES
-
+def apply_plaid_transaction_changes(run_id):
     spark = (
         SparkSession.builder
         .appName("process_transactions")
@@ -117,9 +101,11 @@ def main(run_id):
         raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_transactions_raw"])
         raw_responses = raw_responses.filter(F.col("run_id") == run_id)
         accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
-        existing_transactions = read_postgres_table(spark, DATABASE_URL, TABLES["transactions"])
-        prepare_new_transactions(raw_responses, accounts).show()
-        prepare_modified_transactions(raw_responses, accounts, existing_transactions)
-        prepare_removed_transactions(raw_responses)
+        ordered_transactions = prepare_transactions(raw_responses, accounts).orderBy(
+            "plaid_item_pk", "page_index"
+        )
+        with db_conn() as conn:
+            unmatched_changes = write_transactions_rows(conn, ordered_transactions)
+        print(len(unmatched_changes))
     finally:
         spark.stop()

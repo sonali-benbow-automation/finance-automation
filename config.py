@@ -13,6 +13,7 @@ TABLES = {
     "runs": os.getenv("RUNS_TABLE", "runs"),
     "plaid_balances_raw": os.getenv("PLAID_BALANCES_RAW_TABLE", "plaid_balances_raw"),
     "plaid_transactions_raw": os.getenv("PLAID_TRANSACTIONS_RAW_TABLE", "plaid_transactions_raw"),
+    "balance_snapshots": os.getenv("BALANCE_SNAPSHOTS_TABLE", "balance_snapshots"),
     "transactions": os.getenv("TRANSACTIONS_TABLE", "transactions"),
     "notifications": os.getenv("NOTIFICATIONS_TABLE", "notifications"),
     "hosted_link_sessions": os.getenv("HOSTED_LINK_SESSIONS_TABLE", "hosted_link_sessions"),
@@ -93,4 +94,3 @@ INGEST_BALANCES_DEFAULT = True
 NOTIFICATIONS_ENABLED = os.getenv("NOTIFICATIONS_ENABLED", "true").lower() == "true"
 DAILY_DIGEST_HOUR = int(os.getenv("DAILY_DIGEST_HOUR", "9"))
 TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
-TRANSACTIONS_START_DATE = os.getenv("TRANSACTIONS_START_DATE")
