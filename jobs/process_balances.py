@@ -1,8 +1,13 @@
-from urllib.parse import urlparse
-from pyspark.sql import SparkSession, functions as F
+import logging
+from pyspark.sql import functions as F
+
 from config import DATABASE_URL, TABLES
 from db.db import db_conn
 from db.repos.balances import write_balance_rows
+from jobs.spark import create_spark_session, read_postgres_table, match_accounts
+from app_logging import log_stage
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -17,21 +22,10 @@ ACCOUNT_LIST_SCHEMA = (
     ">>"
 )
 
-def read_postgres_table(spark, database_url, table_name):
-    parsed_url = urlparse(database_url)
-    jdbc_url = f"jdbc:postgresql://{parsed_url.hostname}:{parsed_url.port}{parsed_url.path}"
-    properties = {
-        "user": parsed_url.username,
-        "password": parsed_url.password,
-        "driver": "org.postgresql.Driver",
-        "sslmode": "require",
-    }
-    return spark.read.jdbc(url=jdbc_url, table=table_name, properties=properties)
-
 
 def extract_balance_details(raw_responses):
     account_list = F.from_json(
-        F.get_json_object("payload", f"$.accounts"),
+        F.get_json_object("payload", "$.accounts"),
         ACCOUNT_LIST_SCHEMA,
     )
     balances = raw_responses.select(
@@ -52,39 +46,22 @@ def extract_balance_details(raw_responses):
     )
 
 
-def match_balance_accounts(balance_details, accounts):
-    account_lookup = accounts.select(
-        "plaid_item_pk",
-        "account_id",
-        F.col("id").alias("account_pk"),
-    )
-    return balance_details.join(
-        account_lookup,
-        on=["plaid_item_pk", "account_id"],
-        how="left",
-    )
-
 def prepare_balances(raw_responses, accounts):
     balances = extract_balance_details(raw_responses)
-    matched_balances = match_balance_accounts(balances, accounts)
+    matched_balances = match_accounts(balances, accounts)
     return matched_balances
 
 
 def apply_plaid_balance_snapshots(run_id):
-    spark = (
-        SparkSession.builder
-        .appName("process_balances")
-        .master("local[*]")
-        .config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
-        .getOrCreate()
-    )
-    try:
-        raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_balances_raw"])
-        raw_responses = raw_responses.filter(F.col("run_id") == run_id)
-        accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
-        processed_balances = prepare_balances(raw_responses, accounts)
-        with db_conn() as conn:
-            skipped_duplicates = write_balance_rows(conn, processed_balances)
-        print(f"Run {run_id} balance snapshots committed. Duplicates skipped: {skipped_duplicates}")
-    finally:
-        spark.stop()
+    with log_stage(logger, "balance_snapshots", run_id=run_id) as fields:
+        spark = create_spark_session("process_balances")
+        try:
+            raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_balances_raw"])
+            raw_responses = raw_responses.filter(F.col("run_id") == run_id)
+            accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
+            processed_balances = prepare_balances(raw_responses, accounts)
+            with db_conn() as conn:
+                skipped_duplicates = write_balance_rows(conn, processed_balances)
+            fields["duplicates_skipped"] = skipped_duplicates
+        finally:
+            spark.stop()

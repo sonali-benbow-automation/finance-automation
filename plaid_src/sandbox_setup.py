@@ -1,3 +1,4 @@
+import logging
 from plaid.model.institutions_search_request import InstitutionsSearchRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.products import Products
@@ -8,6 +9,10 @@ from plaid_src.client import get_plaid_client
 from db.db import db_conn
 from db.repos.items import item_exists, upsert_item
 from config import get_sandbox_plans
+from app_logging import log_stage, run_command
+
+logger = logging.getLogger(__name__)
+
 
 
 def find_institution_id(client, query, preferred_name=None):
@@ -50,41 +55,42 @@ def create_item(client, institution_id, initial_products):
 
 
 def main():
-    client = get_plaid_client()
-    plans = get_sandbox_plans()
-    created = 0
-    skipped = 0
-    with db_conn() as conn:
-        for plan in plans:
-            label = plan["label"]
-            if item_exists(conn, label):
-                skipped += 1
-                continue
-            institution_id, matched_name = find_institution_id(
-                client,
-                plan["query"],
-                plan.get("preferred_name"),
-            )
-            access_token, item_id = create_item(
-                client,
-                institution_id,
-                plan.get("initial_products", ["transactions"]),
-            )
+    with log_stage(logger, "sandbox_setup") as fields:
+        client = get_plaid_client()
+        plans = get_sandbox_plans()
+        created = 0
+        skipped = 0
+        with db_conn() as conn:
+            for plan in plans:
+                label = plan["label"]
+                if item_exists(conn, label):
+                    skipped += 1
+                    continue
+                institution_id, matched_name = find_institution_id(
+                    client,
+                    plan["query"],
+                    plan.get("preferred_name"),
+                )
+                access_token, item_id = create_item(
+                    client,
+                    institution_id,
+                    plan.get("initial_products", ["transactions"]),
+                )
 
-            upsert_item(
-                conn,
-                label=label,
-                institution_name=matched_name,
-                institution_id=institution_id,
-                item_id=item_id,
-                access_token_plaintext=access_token,
-                transactions_enabled=plan.get("transactions_enabled", False),
-                balances_enabled=plan.get("balances_enabled", True),
-            )
-            created += 1
+                upsert_item(
+                    conn,
+                    label=label,
+                    institution_name=matched_name,
+                    institution_id=institution_id,
+                    item_id=item_id,
+                    access_token_plaintext=access_token,
+                    transactions_enabled=plan.get("transactions_enabled", False),
+                    balances_enabled=plan.get("balances_enabled", True),
+                )
+                created += 1
 
-    print(f"Sandbox setup complete. created={created} skipped={skipped}")
+        fields.update(created=created, skipped=skipped)
 
 
 if __name__ == "__main__":
-    main()
+    run_command(main)

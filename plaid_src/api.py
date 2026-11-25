@@ -1,6 +1,8 @@
+import logging
 import os
 from flask import Flask, request, jsonify, Response
 
+from app_logging import configure_logging
 from db.db import db_conn
 from plaid_src.auth import require_admin
 from plaid_src.link import create_link_token, exchange_public_token_and_store_item
@@ -16,6 +18,18 @@ from config import PLAID_REDIRECT_URI
 import copy
 
 
+logger = logging.getLogger(__name__)
+
+
+class PlaidApp(Flask):
+    def log_exception(self, exc_info):
+        logger.error(
+            "stage=plaid_api status=failed endpoint=%s error_type=%s",
+            request.endpoint,
+            exc_info[0].__name__,
+        )
+
+
 def redact_plaid_payload(payload):
     p = copy.deepcopy(payload or {})
     p.pop("public_tokens", None)
@@ -25,7 +39,8 @@ def redact_plaid_payload(payload):
 
 
 def create_app():
-    app = Flask(__name__)
+    configure_logging()
+    app = PlaidApp(__name__)
 
     @app.get("/health")
     def health():
@@ -56,6 +71,7 @@ def create_app():
         link_token = resp["link_token"]
         hosted_link_url = resp.get("hosted_link_url")
         if not hosted_link_url:
+            logger.error("stage=hosted_link_create status=failed reason=missing_hosted_link_url")
             return jsonify({"error": "plaid did not return hosted_link_url"}), 500
         with db_conn() as conn:
             create_session(
@@ -65,6 +81,7 @@ def create_app():
                 hosted_link_url=hosted_link_url,
                 webhook_url=webhook_url,
             )
+        logger.info("stage=hosted_link_create status=completed")
         return jsonify({"link_token": link_token, "hosted_link_url": hosted_link_url})
 
     @app.post("/api/plaid/hosted_link/status")
@@ -97,6 +114,7 @@ def create_app():
         redacted_payload = redact_plaid_payload(payload)
         with db_conn() as conn:
             insert_event(conn, redacted_payload)
+        logger.info("stage=plaid_webhook status=received")
         webhook_type = payload.get("webhook_type")
         webhook_code = payload.get("webhook_code")
         if webhook_type == "LINK" and webhook_code == "EVENTS":
@@ -108,6 +126,7 @@ def create_app():
             public_tokens = payload.get("public_tokens") or []
             public_token = public_tokens[0] if isinstance(public_tokens, list) and public_tokens else None
             if not link_token:
+                logger.warning("stage=hosted_link_finish status=skipped reason=missing_link_token")
                 return jsonify(
                     {
                         "ok": True,
@@ -120,6 +139,7 @@ def create_app():
             with db_conn() as conn:
                 sess = get_by_link_token(conn, link_token)
                 if not sess:
+                    logger.warning("stage=hosted_link_finish status=skipped reason=unknown_link_token")
                     return jsonify(
                         {
                             "ok": True,
@@ -134,9 +154,11 @@ def create_app():
                     return jsonify({"ok": True, "logged": True, "handled": True, "stored": True})
                 if status != "success":
                     mark_failed(conn, link_token, error=f"SESSION_FINISHED status={status}")
+                    logger.warning("stage=hosted_link_finish status=failed reason=plaid_session_unsuccessful")
                     return jsonify({"ok": True, "logged": True, "handled": True, "stored": False})
                 if not public_token:
                     mark_failed(conn, link_token, error="SESSION_FINISHED missing public_token")
+                    logger.warning("stage=hosted_link_finish status=failed reason=missing_public_token")
                     return jsonify({"ok": True, "logged": True, "handled": True, "stored": False})
                 plaid_item_pk, item_id, item_label = exchange_public_token_and_store_item(
                     conn=conn,
@@ -147,6 +169,7 @@ def create_app():
                     balances_enabled=True,
                 )
                 mark_success(conn, link_token)
+            logger.info("stage=hosted_link_finish status=completed plaid_item_pk=%s", plaid_item_pk)
             return jsonify(
                 {
                     "ok": True,

@@ -1,4 +1,4 @@
-from psycopg.types.json import Json
+from psycopg.types.json import Jsonb
 from config import TABLES
 
 ACCOUNTS_TABLE = TABLES["accounts"]
@@ -6,12 +6,6 @@ ACCOUNTS_TABLE = TABLES["accounts"]
 
 def to_text(v):
     return None if v is None else str(v)
-
-
-def to_json(v):
-    if v is None:
-        return None
-    return Json(v)
 
 
 def upsert_account(
@@ -62,7 +56,7 @@ def upsert_account(
                 iso_currency_code,
                 include_in_app,
                 active,
-                to_json(raw),
+                Jsonb(raw) if raw is not None else None,
                 include_in_app,
                 active,
             ),
@@ -70,14 +64,8 @@ def upsert_account(
         return cur.fetchone()[0]
 
 
-def get_included_accounts(conn, plaid_item_pk):
-    sql = f"""
-    select id, account_id
-    from {ACCOUNTS_TABLE}
-    where plaid_item_pk = %s
-      and include_in_app = true
-      and active = true;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (plaid_item_pk,))
-        return {account_id: account_pk for (account_pk, account_id) in cur.fetchall()}
+def write_account_rows(conn, processed_accounts):
+    for account in processed_accounts.toLocalIterator():
+        if not account["account_id"]:
+            continue
+        upsert_account(conn, **account.asDict(), raw=None)

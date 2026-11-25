@@ -23,53 +23,6 @@ def item_exists(conn, label, env_override=None, active_only=True):
         return cur.fetchone() is not None
 
 
-def get_plaid_item_pk(conn, label, env_override=None, active_only=True):
-    env_value = resolve_env(env_override)
-    active_clause = "and active = true" if active_only else ""
-    sql = f"""
-    select id
-    from {PLAID_ITEMS_TABLE}
-    where env = %s
-      and label = %s
-      {active_clause}
-    order by id desc
-    limit 1;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (env_value, label))
-        row = cur.fetchone()
-        return row[0] if row else None
-
-
-def get_item(conn, plaid_item_pk):
-    sql = f"""
-    select
-      id,
-      label,
-      env,
-      institution_name,
-      institution_id,
-      item_id,
-      access_token_enc,
-      access_token_kid,
-      transactions_enabled,
-      balances_enabled,
-      active,
-      archived_at,
-      created_at,
-      updated_at
-    from {PLAID_ITEMS_TABLE}
-    where id = %s;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (plaid_item_pk,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [desc[0] for desc in cur.description]
-        return dict(zip(cols, row))
-
-
 def get_item_id_by_label(conn, label, env_override=None, active_only=True):
     env_value = resolve_env(env_override)
     active_clause = "and active = true" if active_only else ""
@@ -173,12 +126,12 @@ def get_access_token(conn, plaid_item_pk):
         return row[0] if row else None
 
 
-def list_items_for_balances(conn, env_override=None):
+def _list_enabled_items(conn, enabled_column, env_override):
     env_value = resolve_env(env_override)
     sql = f"""
     select id, label
     from {PLAID_ITEMS_TABLE}
-    where balances_enabled = true
+    where {enabled_column} = true
       and env = %s
       and active = true
     order by id;
@@ -186,18 +139,11 @@ def list_items_for_balances(conn, env_override=None):
     with conn.cursor() as cur:
         cur.execute(sql, (env_value,))
         return cur.fetchall()
+
+
+def list_items_for_balances(conn, env_override=None):
+    return _list_enabled_items(conn, "balances_enabled", env_override)
 
 
 def list_items_for_transactions(conn, env_override=None):
-    env_value = resolve_env(env_override)
-    sql = f"""
-    select id, label
-    from {PLAID_ITEMS_TABLE}
-    where transactions_enabled = true
-      and env = %s
-      and active = true
-    order by id;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (env_value,))
-        return cur.fetchall()
+    return _list_enabled_items(conn, "transactions_enabled", env_override)

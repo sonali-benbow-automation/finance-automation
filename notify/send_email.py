@@ -1,3 +1,4 @@
+import logging
 import os
 import smtplib
 from email.message import EmailMessage
@@ -13,6 +14,10 @@ from notify.pdf_report import build_daily_summary_pdf
 load_dotenv()
 
 TZ = ZoneInfo(TIMEZONE or "America/New_York")
+from app_logging import log_stage
+
+logger = logging.getLogger(__name__)
+
 
 
 def require_env(name):
@@ -23,6 +28,13 @@ def require_env(name):
 
 
 def send_daily_digest_email(run_id, subject=None):
+    with log_stage(logger, "email_notification", run_id=run_id) as fields:
+        result = _send_daily_digest_email(run_id, subject)
+        fields["outcome"] = "skipped" if result.get("skipped") else "sent"
+        return result
+
+
+def _send_daily_digest_email(run_id, subject=None):
     channel = "email"
     if not NOTIFICATIONS_ENABLED:
         with db_conn() as conn:
@@ -54,7 +66,8 @@ def send_daily_digest_email(run_id, subject=None):
             error=None,
         )
     try:
-        pdf_bytes = build_daily_summary_pdf(run_id)
+        with log_stage(logger, "build_daily_pdf", run_id=run_id):
+            pdf_bytes = build_daily_summary_pdf(run_id)
     except Exception as e:
         err = str(e)
         with db_conn() as conn:

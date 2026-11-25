@@ -1,8 +1,14 @@
-from urllib.parse import urlparse
-from pyspark.sql import SparkSession, functions as F
+import logging
+from pyspark.sql import functions as F
+
 from config import DATABASE_URL, TABLES
 from db.db import db_conn
 from db.repos.transactions import write_transactions_rows
+from jobs.spark import create_spark_session, read_postgres_table, match_accounts
+from app_logging import log_stage
+
+logger = logging.getLogger(__name__)
+
 
 
 TRANSACTION_LIST_SCHEMA = (
@@ -18,18 +24,6 @@ TRANSACTION_LIST_SCHEMA = (
     "authorized_date: DATE, datetime: TIMESTAMP, authorized_datetime: TIMESTAMP"
     ">>"
 )
-
-
-def read_postgres_table(spark, database_url, table_name):
-    parsed_url = urlparse(database_url)
-    jdbc_url = f"jdbc:postgresql://{parsed_url.hostname}:{parsed_url.port}{parsed_url.path}"
-    properties = {
-        "user": parsed_url.username,
-        "password": parsed_url.password,
-        "driver": "org.postgresql.Driver",
-        "sslmode": "require",
-    }
-    return spark.read.jdbc(url=jdbc_url, table=table_name, properties=properties)
 
 
 def extract_transaction_details(raw_responses, list_name):
@@ -68,44 +62,29 @@ def extract_transaction_details(raw_responses, list_name):
     )
 
 
-def match_transaction_accounts(transaction_details, accounts):
-    account_lookup = accounts.select(
-        "plaid_item_pk",
-        "account_id",
-        F.col("id").alias("account_pk"),
-    )
-    return transaction_details.join(
-        account_lookup,
-        on=["plaid_item_pk", "account_id"],
-        how="left",
-    )
-
 def prepare_transactions(raw_responses, accounts):
     added_transactions = extract_transaction_details(raw_responses, "added")
     modified_transactions = extract_transaction_details(raw_responses, "modified")
     removed_transactions = extract_transaction_details(raw_responses, "removed")
     combined_transactions = (added_transactions.unionByName(modified_transactions).unionByName(removed_transactions))
-    matched_transactions = match_transaction_accounts(combined_transactions, accounts)
+    matched_transactions = match_accounts(combined_transactions, accounts)
     return matched_transactions.withColumn("first_seen_run_id", F.col("run_id"))
 
 
 def apply_plaid_transaction_changes(run_id):
-    spark = (
-        SparkSession.builder
-        .appName("process_transactions")
-        .master("local[*]")
-        .config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
-        .getOrCreate()
-    )
-    try:
-        raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_transactions_raw"])
-        raw_responses = raw_responses.filter(F.col("run_id") == run_id)
-        accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
-        ordered_transactions = prepare_transactions(raw_responses, accounts).orderBy(
-            "plaid_item_pk", "page_index"
-        )
-        with db_conn() as conn:
-            unmatched_changes = write_transactions_rows(conn, ordered_transactions)
-        print(len(unmatched_changes))
-    finally:
-        spark.stop()
+    with log_stage(logger, "transactions", run_id=run_id) as fields:
+        spark = create_spark_session("process_transactions")
+        try:
+            raw_responses = read_postgres_table(spark, DATABASE_URL, TABLES["plaid_transactions_raw"])
+            raw_responses = raw_responses.filter(F.col("run_id") == run_id)
+            accounts = read_postgres_table(spark, DATABASE_URL, TABLES["accounts"])
+            ordered_transactions = prepare_transactions(raw_responses, accounts).orderBy(
+                "plaid_item_pk", "page_index"
+            )
+            with db_conn() as conn:
+                unmatched_changes = write_transactions_rows(conn, ordered_transactions)
+            fields["unmatched_changes"] = len(unmatched_changes)
+            if unmatched_changes:
+                logger.warning("stage=transactions run_id=%s unmatched_changes=%s", run_id, len(unmatched_changes))
+        finally:
+            spark.stop()
